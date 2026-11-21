@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 import mechfight as mf
 from world import World
-from navigation import choose_goal, steer
+from navigation import steer
+from opponent_model import OpponentTracker
+from objective_planner import choose_risk_aware_goal
 from combat import choose_target, combat_action, projectile_dodge
 from strategy import choose_upgrade, choose_take, survival_boost, should_jump
 from geometry import dist2, unit2, angle_delta
@@ -19,6 +21,7 @@ class MechRoyaleBot:
         self.last_attacker = None
         self.last_damage_t = -999.0
         self.tick_count = 0
+        self.opponents = OpponentTracker()
 
     def _threat_vector(self, obs, me):
         """Repulsion from nearby attackers and recent weapon sounds."""
@@ -79,6 +82,7 @@ class MechRoyaleBot:
         self.tick_count += 1
         me = obs["self"]
         now = float(obs.get("t", 0))
+        self.opponents.update(obs)
         for event in obs.get("events", []):
             if event.get("type") == "damaged" and event.get("by") is not None:
                 self.last_attacker = event["by"]
@@ -86,11 +90,19 @@ class MechRoyaleBot:
 
         recent_attacker = self.last_attacker if now-self.last_damage_t < 2.5 else None
         target = choose_target(obs, me, recent_attacker)
-        goal, goal_kind = choose_goal(obs, self.world)
+        target = self.opponents.filtered_target(target)
+        goal, goal_kind = choose_risk_aware_goal(obs, self.world)
         base_direction, waypoint = steer(obs, self.world, goal)
         goal_distance = dist2(me["pos"][:2], goal[:2])
 
         evasion, danger, nearby = self._threat_vector(obs, me)
+        predicted_evasion, predicted_danger, predicted_nearby = self.opponents.threat_vector(me, now)
+        evasion = (evasion[0] + 0.85*predicted_evasion[0], evasion[1] + 0.85*predicted_evasion[1])
+        evasion_len = math.hypot(*evasion)
+        if evasion_len > 1e-9:
+            evasion = (evasion[0]/evasion_len, evasion[1]/evasion_len)
+        danger = max(danger, predicted_danger)
+        nearby = max(nearby, predicted_nearby)
         if nearby >= 2:
             danger = max(danger, 0.60)
         dodge, projectile_urgency = projectile_dodge(obs, me)
