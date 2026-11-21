@@ -2,7 +2,7 @@
 from __future__ import annotations
 import array, json, math, os
 from pathlib import Path
-from geometry import point_in_prism, segment_hits_prism
+from geometry import point_in_prism, segment_hits_prism, point_segment_distance
 
 class World:
     def __init__(self, map_dir=None):
@@ -93,41 +93,50 @@ class World:
         return True
 
     def route(self, start, goal):
-        """Return a safe local waypoint around the first blocking prism, if needed."""
+        """Return a local waypoint around the first blocking prism, with bounded work."""
         if not self.blocked(start, goal):
             return goal
-        # Find the first blocking prism, then try offset points around its vertices.
-        dx, dy = goal[0]-start[0], goal[1]-start[1]
-        length = math.hypot(dx, dy)
-        if length < 1e-6:
-            return goal
-        first = None
         dx0, dy0 = goal[0]-start[0], goal[1]-start[1]
-        l0 = math.hypot(dx0,dy0)
-        if l0 > 45:
-            k = 45/l0
+        l0 = math.hypot(dx0, dy0)
+        if l0 < 1e-6:
+            return goal
+        if l0 > 45.0:
+            k = 45.0/l0
             goal = (start[0]+dx0*k, start[1]+dy0*k, start[2]+(goal[2]-start[2])*k)
+        minx, maxx = min(start[0],goal[0])-3, max(start[0],goal[0])+3
+        miny, maxy = min(start[1],goal[1])-3, max(start[1],goal[1])+3
+        first = None
         for p, bounds in zip(self.prisms, self.prism_bounds):
-            if bounds[2] < min(start[0],goal[0])-3 or bounds[0] > max(start[0],goal[0])+3 or bounds[3] < min(start[1],goal[1])-3 or bounds[1] > max(start[1],goal[1])+3:
+            if bounds[2] < minx or bounds[0] > maxx or bounds[3] < miny or bounds[1] > maxy:
                 continue
             if segment_hits_prism(start, goal, p):
                 first = p
                 break
         if first is None:
             return goal
+
         ring = first.get("ring", [])
-        candidates = []
         n = len(ring)//2
+        if n < 3:
+            return goal
+        cx = sum(ring[0::2])/n
+        cy = sum(ring[1::2])/n
+        # Only evaluate vertices near the direct route. The old all-vertices search
+        # repeatedly collision-tested every candidate against the entire campus map.
+        ranked = []
         for i in range(n):
             vx, vy = ring[2*i], ring[2*i+1]
-            # Offset from vertex away from the polygon centroid.
-            cx = sum(ring[0::2])/n
-            cy = sum(ring[1::2])/n
+            d = point_segment_distance((vx,vy), start, goal)
+            ranked.append((d, vx, vy))
+        ranked.sort(key=lambda q:q[0])
+        candidates = []
+        for _, vx, vy in ranked[:6]:
             ox, oy = vx-cx, vy-cy
-            norm = math.hypot(ox, oy) or 1
-            for margin in (4.0, 8.0, 14.0):
-                q = (vx+ox/norm*margin, vy+oy/norm*margin, self.ground(vx+ox/norm*margin, vy+oy/norm*margin))
-                if not self.blocked(start, q) and not self.blocked(q, goal):
-                    score = math.dist(start[:2], q[:2]) + math.dist(q[:2], goal[:2])
-                    candidates.append((score, q))
-        return min(candidates, key=lambda x:x[0])[1] if candidates else goal
+            norm = math.hypot(ox,oy) or 1.0
+            for margin in (5.0, 10.0):
+                qx, qy = vx+ox/norm*margin, vy+oy/norm*margin
+                q = (qx, qy, self.ground(qx,qy))
+                if not self.blocked(start,q) and not self.blocked(q,goal):
+                    score = math.dist(start[:2],q[:2]) + math.dist(q[:2],goal[:2])
+                    candidates.append((score,q))
+        return min(candidates,key=lambda x:x[0])[1] if candidates else goal
