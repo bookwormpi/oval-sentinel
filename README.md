@@ -32,7 +32,7 @@ Docker build argument alone will not select a strategy for a submission.
 | `survivor` | Hold position when safe, avoid threats, recover to the nearest safe zone point, and take nearby safe supply drops. |
 | `scavenger` | Survivor-style movement plus pursuit of nearby safe cubes, weapons and drops; shoots nearby crates when there is no tracked target or recent damage. |
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
-| `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization and short-range obstacle-aware evasion. The default for the next submission. |
+| `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization, short-range obstacle-aware evasion, grounded upgrade valuation, finishing-blow target priority, and cover-seeking retreat (see below). The default for the next submission. |
 | `adaptive` | Opt-in Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
 | `neural` | Experimental neural movement and aim, with automatic Vanguard-derived actions. Requires `bot/neural_policy.json`. |
 
@@ -212,7 +212,46 @@ The included initial model is a two-generation, four-individual smoke test.
 On one held-out seed with two seat rotations, it averaged 46.7 seconds of
 survival versus 267.8 seconds for its Vanguard opponents. This is too little
 evaluation for a reliable comparison, but it does not justify replacing the
-default.
+default. It was validated against Vanguard *before* the rebalancing below.
+
+## Vanguard rebalancing
+
+Three changes to Vanguard, each grounded in the official kit's real numbers
+(not new guessed constants) and validated by paired self-play (see below):
+
+- **Upgrade valuation now reads the bot's real current stats** (`bot/strategy.py`).
+  The previous selector used 22 fixed, hand-guessed scores. The replacement
+  computes each candidate's actual marginal effect from `hello.config.upgrades`
+  and the mech/weapon stats already in the observation, correctly handling
+  multiplicative stacking (e.g. `+15%` HP compounds across copies, so `plating`
+  is worth more than the previous scores implied relative to the additive
+  `armor`) and "cost" stats consumed as a rate (a 25% cooldown cut buys
+  `1/0.75 - 1 ≈ 33%` more shots, not 25%). This caught and fixed a real defect
+  mid-implementation: a naive percentage against a near-zero baseline (vision/
+  proximity bonuses, which start at 0) made `sensors` wildly overvalued; it is
+  now scaled against the actual base vision range.
+- **Target selection no longer assumes a fixed 1400 max HP** (`bot/combat.py`).
+  Cube stacking raises max HP by up to 40%, so scoring a buffed enemy's
+  remaining fraction against a fixed baseline mis-ranks it against a
+  non-buffed enemy. It now also gives a finishing-blow priority bonus to
+  targets below 15% HP: a target left alive that low fully heals within
+  `regen_delay` (5 s) plus a few seconds of disengagement, so committing to
+  the kill is usually worth more than switching targets.
+- **Cover-seeking when losing a fight** (`bot/policies.py`). Previously,
+  Vanguard's evasive movement only avoided solid geometry and the zone edge;
+  it never considered breaking line of sight. Below 40% HP while engaged with
+  a visible enemy mech, it now prefers a walkable retreat/strafe direction
+  that would also put the enemy out of sight, among the options it was
+  already evaluating.
+
+```bash
+# Ad hoc paired A/B (not part of the committed test suite): mirrors
+# simulator/train.py's methodology, alternating which half of 8 seats uses
+# the new vs. pre-rebalance Vanguard per seed, matched head-to-head.
+python3 /tmp/vanguard_ab/ab_test.py 30 6000
+```
+
+VANGUARD_AB_RESULTS_PLACEHOLDER
 
 ## Docker validation
 
