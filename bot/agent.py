@@ -5,8 +5,9 @@ import mechfight as mf
 from world import World
 from navigation import choose_goal, steer
 from combat import choose_target, combat_action, projectile_dodge
-from strategy import choose_upgrade, choose_take, survival_boost, should_jump
+from strategy import choose_upgrade, choose_take, survival_boost, should_jump, selected_strategy
 from geometry import dist2, unit2, angle_delta
+from policies import choose_variant_goal, choose_crate, variant_movement
 
 
 class MechRoyaleBot:
@@ -20,6 +21,9 @@ class MechRoyaleBot:
         self.last_damage_t = -999.0
         self.tick_count = 0
         self.current_target_id = None
+        self.strategy = selected_strategy()
+        if self.strategy != "baseline":
+            self.name = f"Oval Sentinel {self.strategy}"
 
     def _threat_vector(self, obs, me):
         """Repulsion from nearby attackers and recent weapon sounds."""
@@ -88,8 +92,14 @@ class MechRoyaleBot:
         recent_attacker = self.last_attacker if now-self.last_damage_t < 2.5 else None
         target = choose_target(obs, me, recent_attacker, self.current_target_id)
         self.current_target_id = target.get("id") if target else None
-        goal, goal_kind = choose_goal(obs, self.world)
-        base_direction, waypoint = steer(obs, self.world, goal)
+        if self.strategy == "baseline":
+            goal, goal_kind = choose_goal(obs, self.world)
+        else:
+            goal, goal_kind = choose_variant_goal(obs, self.world, self.strategy)
+        if self.strategy != "baseline" and goal_kind in ("hold", "capture"):
+            base_direction = (0.0, 0.0)
+        else:
+            base_direction, _ = steer(obs, self.world, goal)
         goal_distance = dist2(me["pos"][:2], goal[:2])
 
         evasion, danger, nearby = self._threat_vector(obs, me)
@@ -99,7 +109,11 @@ class MechRoyaleBot:
         urgency = max(danger, projectile_urgency)
 
         # Zone recovery outranks combat evasion; otherwise break away from focused attackers.
-        if not me.get("in_zone", True):
+        if self.strategy != "baseline":
+            (mx, my), move_scale = variant_movement(
+                self.strategy, obs, target, goal_kind, base_direction,
+                evasion, dodge, danger, projectile_urgency)
+        elif not me.get("in_zone", True):
             mx, my = unit2(base_direction[0]*1.8 + evasion[0]*0.25,
                            base_direction[1]*1.8 + evasion[1]*0.25)
             move_scale = 1.0
@@ -117,7 +131,11 @@ class MechRoyaleBot:
             move_scale = 1.0
 
         # If a recent attacker is behind us, face it to eliminate the 1.5x rear-hit penalty.
-        aim, fire, reload_now, target_info = combat_action(obs, me, target, self.config, self.world)
+        if (self.strategy == "scavenger" and target is None
+                and goal_kind == "hold" and me.get("cubes", 0) < 10):
+            target = choose_crate(obs, self.last_damage_t)
+        aim, fire, reload_now, target_info = combat_action(
+            obs, me, target, self.config, self.world, correct_mortar=self.strategy != "baseline")
         for event in obs.get("events", []):
             if event.get("type") == "damaged" and event.get("bearing") is not None:
                 if event.get("rear") or target is None:
@@ -153,7 +171,7 @@ class MechRoyaleBot:
 
         # Debug drawings are sparse and small; they do not influence the match.
         if self.tick_count % 10 == 0:
-            mf.draw.label(f"{goal_kind} | hp {int(me['hp'])} | threat {urgency:.1f}")
+            mf.draw.label(f"{self.strategy} {goal_kind} | hp {int(me['hp'])} | threat {urgency:.1f}")
             mf.draw.point([goal[0], goal[1], goal[2]], "#40c0ff", 4)
             if target:
                 tp = target["pos"]

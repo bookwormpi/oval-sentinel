@@ -72,6 +72,19 @@ class CombatTests(unittest.TestCase):
         )
         self.assertGreater(pitch, 0.0)
 
+    def test_corrected_mortar_intercepts_stationary_and_moving_targets(self):
+        mortar = {"kind": "mortar", "stats": {"speed": 72, "gravity": 22}}
+        for velocity in ([0.0, 0.0, 0.0], [5.0, 7.0, 0.0]):
+            with self.subTest(velocity=velocity):
+                target = {"kind": "mech", "pos": [100.0, 0.0, 0.0], "vel": velocity}
+                yaw, pitch, _, _ = predict_target(self.me, target, mortar, self.config, True)
+                vx = 72 * math.cos(pitch) * math.cos(yaw)
+                vy = 72 * math.cos(pitch) * math.sin(yaw)
+                flight = 100.0 / (vx - velocity[0])
+                self.assertAlmostEqual(vy * flight, velocity[1] * flight, delta=0.1)
+                shell_z = 7.0 + 72 * math.sin(pitch) * flight - 11 * flight * flight
+                self.assertAlmostEqual(shell_z, 4.5, delta=0.1)
+
 
 if __name__ == "__main__":
     unittest.main()

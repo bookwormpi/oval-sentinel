@@ -1,6 +1,18 @@
 """Upgrade valuation and conservative energy policy."""
 from __future__ import annotations
 from collections import Counter
+import os
+
+# Change this value and submit the resulting commit to test a different policy.
+SELECTED_STRATEGY = "skirmisher"
+STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher")
+
+
+def selected_strategy():
+    mode = os.environ.get("OVAL_STRATEGY", SELECTED_STRATEGY)
+    if mode not in STRATEGIES:
+        raise ValueError(f"Unknown strategy {mode!r}; choose from {', '.join(STRATEGIES)}")
+    return mode
 
 # Higher values indicate better long-term survival / expected combat value.
 UPGRADE_BASE = {

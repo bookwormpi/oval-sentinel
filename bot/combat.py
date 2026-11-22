@@ -40,7 +40,7 @@ def choose_target(obs, me, recent_attacker=None, current_target_id=None):
     return max(candidates, key=lambda x: x[0])[1] if candidates else None
 
 
-def predict_target(me, target, weapon, config):
+def predict_target(me, target, weapon, config, correct_mortar=False):
     stats_me = me.get("stats", {})
     muzzle_h = float(stats_me.get("muzzle_height", 7.0))
     origin = (me["pos"][0], me["pos"][1], me["pos"][2] + muzzle_h)
@@ -66,16 +66,21 @@ def predict_target(me, target, weapon, config):
         pitch = ballistic_pitch(horizontal, r[2], speed, gravity)
         if pitch is None:
             return yaw, 0.0, dist3(origin, aimpoint), r
-        for _ in range(3):
+        for _ in range(6 if correct_mortar else 3):
             flight = horizontal / max(1e-3, speed * math.cos(pitch))
             qx = r[0] + relative_vel[0] * flight
             qy = r[1] + relative_vel[1] * flight
-            qz = r[2] + relative_vel[2] * flight - 0.5 * gravity * flight * flight
+            qz = r[2] + relative_vel[2] * flight
+            if not correct_mortar:
+                qz -= 0.5 * gravity * flight * flight
             yaw = math.atan2(qy, qx)
-            next_pitch = ballistic_pitch(math.hypot(qx, qy), qz, speed, gravity)
+            predicted_horizontal = math.hypot(qx, qy)
+            next_pitch = ballistic_pitch(predicted_horizontal, qz, speed, gravity)
             if next_pitch is None:
                 break
             pitch = next_pitch
+            if correct_mortar:
+                horizontal = predicted_horizontal
         return yaw, pitch, dist3(origin, aimpoint), r
     # Laser and lightning are hitscan; lightning only uses horizontal yaw for its cone.
     return math.atan2(r[1], r[0]), math.atan2(r[2], max(1e-6, math.hypot(r[0], r[1]))), dist3(origin, aimpoint), r
@@ -102,7 +107,7 @@ def _weapon_aim_priority(w, distance):
     return -1
 
 
-def combat_action(obs, me, target, config, world=None):
+def combat_action(obs, me, target, config, world=None, correct_mortar=False):
     """Choose the best weapon's aim; independently gate each trigger on actual alignment."""
     actual = me.get("aim", [0.0, 0.0])
     aim = [float(actual[0]), float(actual[1])]
@@ -120,7 +125,7 @@ def combat_action(obs, me, target, config, world=None):
         for slot, w in enumerate(weapons[:2]):
             if not w:
                 continue
-            yaw, pitch, distance, rel = predict_target(me, target, w, config)
+            yaw, pitch, distance, rel = predict_target(me, target, w, config, correct_mortar)
             pitch = clamp(pitch, float(config["mech"].get("min_pitch", -0.7)), float(config["mech"].get("max_pitch", 1.3)))
             solutions[slot] = (yaw, pitch, distance, rel)
             priority = _weapon_aim_priority(w, distance)

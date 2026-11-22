@@ -7,10 +7,12 @@
 3. **Upgrade stacking:** the previous selector rejected an upgrade as soon as its ID appeared in `self.upgrades`, even though the kit defines multi-stack maximums. The revised selector counts owned stacks and respects the configured cap.
 4. **Laser charge tracking:** the previous firing gate could release a partially charged laser when a moving target caused a brief alignment error. The revised controller keeps charging while tracking a valid in-range target and releases at full charge.
 5. **Navigation latency:** the previous route planner tested every polygon vertex and repeatedly ran map-wide collision checks. The revised planner considers only the six vertices nearest the direct route and tests two offsets per vertex.
-6. **Shooter-relative gun and mortar lead:** gun and mortar prediction now solves interception using target velocity minus the bot's own velocity. This prevents incorrect lead for mechs moving along the firing line.
+6. **Shooter-relative gun and mortar lead:** gun and mortar prediction uses target velocity minus the bot's own velocity. This assumes projectile velocity inherits shooter velocity, which the protocol does not specify.
 7. **Torso slew-aware firing:** gun, laser, and lightning firing gates predict 100 ms of bounded yaw/pitch slew. Shots are no longer treated as valid solely from an instant commanded aim.
 8. **Direct-fire line of sight:** gun, laser, and lightning shots are suppressed when static map geometry blocks the muzzle-to-target line. Mortar fire remains available over buildings.
 9. **Target switching hysteresis:** the current target receives a modest score bonus, reducing rapid target churn without preventing a meaningful threat from taking over.
+10. **Deadline regression:** LOS checks now use prism bounds, z-bounds, a bounded 96-sample interval, and a 128-entry static cache. The host checker answered 300/300 observations; the constrained container was not tested locally.
+11. **Mortar gravity:** the baseline iteration subtracts gravity before calling a solver that already accounts for it, producing inaccurate aim. The experimental strategies correct this, while the baseline retains it for score comparisons.
 
 ## Strategic changes
 
@@ -22,7 +24,7 @@
 
 ## Validation performed
 
-- Unit tests: 17 tests covering geometry, bounded aim slew, secondary weapon aiming, shooter-relative lead, laser charge/release, projectile dodge (including vertical false-positive and moving-away cases), nearby weapon pickup, and upgrade stacking/caps.
+- Unit tests: 18 tests covering geometry, bounded aim slew, secondary weapon aiming, shooter-relative lead, mortar gravity prediction, laser charge/release, projectile dodge (including vertical false-positive and moving-away cases), nearby weapon pickup, and upgrade stacking/caps.
 - Official sample-stream conformance: 300/300 observations answered; 0 missed the 50 ms budget; 0 wrong ticks; 0 bad lines; 30 debug drawings within caps.
 - Observed host timing: p50 0.2 ms, p90 0.5 ms, p99 7.9 ms, max 9.1 ms on this run. These are host measurements, not a guarantee under the one-CPU match container.
 - Docker build not performed because Docker is unavailable in the environment.
