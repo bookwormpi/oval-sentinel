@@ -1,17 +1,21 @@
 import copy
 import gzip
+import io
 import json
 import math
 import random
+import signal
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
 from simulator.engine import ROOT, Simulator, load_config
 from simulator.neural_train import evaluate_population, evaluate_validation, reproduce
+from simulator import neural_train
 from neural import (CONFIG_BUCKETS, GLOBAL_SIZE, INPUT_SIZE, NeuralBot, _compressed, _map_distances,
                     encode_observation, load_model, random_model)
 from test_simulator import FlatWorld, factory
@@ -154,6 +158,67 @@ class NeuralTests(unittest.TestCase):
                  "--validation-seed", "42", "--output", str(path)], cwd=ROOT, capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("must not overlap", result.stderr)
+
+    def test_interruption_saves_best_completed_validation_not_latest_generation(self):
+        evaluated = []
+
+        def validate(candidate, *args, **kwargs):
+            evaluated.append(candidate)
+            return {"candidate_mean_survival_seconds": [40, 60, 20][len(evaluated) - 1],
+                    "opponents_mean_survival_seconds": 50, "matches": 1}
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "model.json"
+            argv = ["neural_train", "--output", str(output), "--resume", "existing.json",
+                    "--select-best", "--population", "2", "--group-size", "2",
+                    "--rotations", "1", "--generations", "3"]
+            with patch.object(sys, "argv", argv), \
+                    patch.object(neural_train, "load_config", return_value=self.config), \
+                    patch.object(neural_train, "load_world", return_value=FlatWorld()), \
+                    patch.object(neural_train, "load_model", return_value=self.model), \
+                    patch.object(neural_train, "file_hash", return_value="hash"), \
+                    patch.object(neural_train, "evaluate_population",
+                                 side_effect=[[1, 2], [4, 1], KeyboardInterrupt()]), \
+                    patch.object(neural_train, "evaluate_validation", side_effect=validate), \
+                    redirect_stdout(io.StringIO()):
+                neural_train.main()
+            saved = load_model(output)
+            self.assertEqual(saved["weights"], evaluated[1]["weights"])
+            self.assertTrue(saved["training"]["interrupted"])
+            self.assertEqual(saved["training"]["best_generation"], 0)
+            self.assertEqual(saved["training"]["validation"]["candidate_mean_survival_seconds"], 60)
+
+    def test_sigint_resumes_and_atomically_replaces_existing_model(self):
+        self.config["match"]["duration_s"] = 0.1
+        with tempfile.TemporaryDirectory() as directory:
+            stream = Path(directory) / "config.jsonl.gz"
+            model = Path(directory) / "model.json"
+            with gzip.open(stream, "wt", encoding="utf-8") as file:
+                file.write(json.dumps({"type": "hello", "config": self.config}) + "\n")
+            model.write_text(json.dumps(self.model), encoding="utf-8")
+            process = subprocess.Popen(
+                [sys.executable, "-m", "simulator.neural_train", "--population", "2",
+                 "--group-size", "2", "--rotations", "1", "--generations", "1000",
+                 "--config-stream", str(stream), "--resume", str(model), "--select-best",
+                 "--overwrite", "--output", str(model)],
+                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                for line in process.stdout:
+                    if json.loads(line)["type"] == "generation":
+                        process.send_signal(signal.SIGINT)
+                        break
+                stdout, stderr = process.communicate(timeout=30)
+                self.assertEqual(process.returncode, 0, stderr)
+                saved = load_model(model)
+                self.assertTrue(saved["training"]["interrupted"])
+                self.assertEqual(saved["training"]["selection"], "validation")
+                self.assertEqual(saved["object_radius"], self.model["object_radius"])
+                self.assertEqual(list(Path(directory).glob(".model.json.*")), [])
+                self.assertTrue(any(json.loads(line)["type"] == "summary" for line in stdout.splitlines()))
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate()
 
 
 if __name__ == "__main__":

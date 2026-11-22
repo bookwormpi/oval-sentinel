@@ -47,6 +47,10 @@ from the actual torso yaw at up to 2 rad/s. They briefly investigate recent
 sounds and face a damage bearing, then resume scanning. The neural controller
 uses its own learned aim instead. Scanning costs time to turn back toward a
 new target and has not been validated as a tournament performance improvement.
+Loot and supply-drop detours outside the next safe circle must leave enough
+estimated walking time to return before the shrink ends, including the zone
+lead buffer and remaining capture or climb time. This is a straight-line
+estimate, not a guarantee of navigating around obstacles before the deadline.
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash
@@ -206,6 +210,21 @@ python3 -m simulator.neural_train --population 4 --group-size 4 \
 python3 -m simulator --strategies neural vanguard --model /tmp/neural-policy.json \
   --slots 4 --matches 4 --seed 2000042
 ```
+
+For a long run starting from an existing model, use `--resume PATH`. Add
+`--select-best` to compare each completed generation's winner and the initial
+model against Vanguard on the same validation seeds. The highest mean
+survival is retained; because those seeds select the model, evaluate the
+result on separate seeds. The resumed model's object radius is retained.
+`--overwrite` permits replacing an existing output; the replacement is written
+atomically only when training ends or is interrupted.
+
+Ctrl-C saves the best fully evaluated model and skips unfinished work. If
+interrupted before the initial validation completes, the resumed model is
+saved unchanged apart from training metadata. For a detached run, send
+`kill -INT <training-pid>` and wait for its summary; `SIGKILL` cannot save.
+The output remains experimental: survival fitness can reward avoiding combat,
+and selection on the approximate simulator does not prove tournament strength.
 
 Training emits per-match survival times and stores its settings, map/config
 hashes and held-out results in the model. To test a model in the tournament

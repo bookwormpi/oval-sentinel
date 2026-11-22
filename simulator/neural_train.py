@@ -2,14 +2,17 @@
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import random
+import signal
 import statistics
+import tempfile
 
 from .engine import ROOT, Simulator, load_config, load_world
 from .train import emit, file_hash
 from agent import MechRoyaleBot
-from neural import NeuralBot, random_model, validate_model
+from neural import NeuralBot, load_model, random_model, validate_model
 
 
 def _match(strategies, models, seed, config, world, simulator=Simulator):
@@ -105,9 +108,35 @@ def reproduce(population, fitness, rng, mutation_rate, mutation_sigma):
     return offspring
 
 
+def save_model(output, model, overwrite):
+    """Write a complete model before making it visible at the output path."""
+    mode = output.stat().st_mode & 0o777 if output.exists() else 0o644
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=output.parent,
+                                         prefix=f".{output.name}.", delete=False) as destination:
+            temp_path = Path(destination.name)
+            json.dump(model, destination, separators=(",", ":"), allow_nan=False)
+            destination.write("\n")
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.chmod(temp_path, mode)
+        if overwrite:
+            os.replace(temp_path, output)
+        else:
+            os.link(temp_path, output)
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", required=True, help="new model JSON path; existing files are not overwritten")
+    parser.add_argument("--output", required=True, help="model JSON output path")
+    parser.add_argument("--resume", help="initialize the population from this existing model")
+    parser.add_argument("--overwrite", action="store_true", help="allow replacing an existing output model")
+    parser.add_argument("--select-best", action="store_true",
+                        help="select generation winners on the fixed validation seeds")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--validation-seed", type=int)
     parser.add_argument("--population", type=int, default=4)
@@ -137,7 +166,7 @@ def main():
     if not math.isfinite(args.mutation_sigma) or not 0 < args.mutation_sigma <= 10:
         parser.error("--mutation-sigma must be finite and in (0, 10]")
     output = Path(args.output)
-    if output.exists():
+    if output.exists() and not args.overwrite:
         parser.error(f"output already exists: {output}")
     training_seeds = list(range(args.seed, args.seed + args.generations * args.train_seeds))
     validation_start = args.validation_seed if args.validation_seed is not None else args.seed + 1000000
@@ -146,33 +175,63 @@ def main():
         parser.error("training and validation seeds must not overlap")
     world = load_world(args.map_dir)
     rng = random.Random(args.seed)
-    population = [random_model(rng, args.object_radius) for _ in range(args.population)]
-    fitness = []
+    initial = load_model(args.resume) if args.resume else None
+    if initial is not None:
+        population = reproduce([initial] * args.population, [0.0] * args.population,
+                               rng, args.mutation_rate, args.mutation_sigma)
+    else:
+        population = [random_model(rng, args.object_radius) for _ in range(args.population)]
+    winner = initial if initial is not None else population[0]
+    validation = None
+    best_generation = None
     history = []
-    for generation in range(args.generations):
-        seeds = training_seeds[generation * args.train_seeds:(generation + 1) * args.train_seeds]
-        fitness = evaluate_population(
-            population, seeds, args.group_size, args.rotations, config, world,
-            lambda record: emit({"type": "training_match", "generation": generation, **record}))
-        history.append({"generation": generation, "seeds": seeds, "fitness_seconds": fitness})
-        emit({"type": "generation", **history[-1]})
-        if generation + 1 < args.generations:
-            population = reproduce(population, fitness, rng, args.mutation_rate, args.mutation_sigma)
-    winner = population[max(range(len(population)), key=lambda i: fitness[i])]
-    validation = evaluate_validation(
-        winner, validation_seeds, args.group_size, args.rotations, config, world,
-        lambda record: emit({"type": "validation_match", **record}))
+    interrupted = False
+    # Detached shells can inherit SIGINT as ignored; make kill -INT equivalent to Ctrl-C.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        if args.select_best and initial is not None:
+            validation = evaluate_validation(
+                winner, validation_seeds, args.group_size, args.rotations, config, world,
+                lambda record: emit({"type": "validation_match", "generation": None, **record}))
+            emit({"type": "selection", "generation": None, **validation})
+        for generation in range(args.generations):
+            seeds = training_seeds[generation * args.train_seeds:(generation + 1) * args.train_seeds]
+            fitness = evaluate_population(
+                population, seeds, args.group_size, args.rotations, config, world,
+                lambda record: emit({"type": "training_match", "generation": generation, **record}))
+            history.append({"generation": generation, "seeds": seeds, "fitness_seconds": fitness})
+            candidate = population[max(range(len(population)), key=lambda i: fitness[i])]
+            emit({"type": "generation", **history[-1]})
+            if args.select_best:
+                candidate_validation = evaluate_validation(
+                    candidate, validation_seeds, args.group_size, args.rotations, config, world,
+                    lambda record: emit({"type": "validation_match", "generation": generation, **record}))
+                if (validation is None or candidate_validation["candidate_mean_survival_seconds"]
+                        > validation["candidate_mean_survival_seconds"]):
+                    winner, validation, best_generation = candidate, candidate_validation, generation
+                emit({"type": "selection", "generation": generation, "selected_generation": best_generation,
+                      **candidate_validation})
+            else:
+                winner, best_generation = candidate, generation
+            if generation + 1 < args.generations:
+                population = reproduce(population, fitness, rng, args.mutation_rate, args.mutation_sigma)
+        if not args.select_best:
+            validation = evaluate_validation(
+                winner, validation_seeds, args.group_size, args.rotations, config, world,
+                lambda record: emit({"type": "validation_match", **record}))
+    except KeyboardInterrupt:
+        interrupted = True
     summary = {"method": "population_elitism_uniform_crossover_gaussian_mutation_v1",
                "seed": args.seed, "training_seeds": training_seeds, "validation_seeds": validation_seeds,
                "population": args.population, "group_size": args.group_size, "rotations": args.rotations,
                "generations": args.generations, "mutation_rate": args.mutation_rate,
                "mutation_sigma": args.mutation_sigma, "history": history, "validation": validation,
+               "interrupted": interrupted, "selection": "validation" if args.select_best else "last_generation",
+               "best_generation": best_generation, "resumed_from": args.resume,
                "source_sha256": {"world": file_hash(Path(args.map_dir) / "v2" / "world.json"),
                                  "terrain": file_hash(Path(args.map_dir) / "v2" / "terrain.i16"),
                                  "config_stream": file_hash(args.config_stream)}}
-    with output.open("x", encoding="utf-8") as destination:
-        json.dump({**winner, "training": summary}, destination, separators=(",", ":"), allow_nan=False)
-        destination.write("\n")
+    save_model(output, {**winner, "training": summary}, args.overwrite)
     emit({"type": "summary", "model_file": str(output), **summary})
 
 

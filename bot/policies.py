@@ -65,10 +65,28 @@ def choose_variant_goal(obs, world, mode, parameters=None):
     enemies = [e for e in obs.get("mechs", [])
                if e.get("kind") == "mech" and e.get("id") != me["id"]]
 
-    def safe(point, threat_radius):
+    def zone_detour_safe(point, action_seconds=0.0):
+        zone = obs["zone"]
+        next_radius = float(zone["next_radius"])
+        next_point = _interior_point(point, zone["next_center"], next_radius,
+                                     min(20.0, next_radius * 0.1))
+        return_distance = dist2(point, next_point)
+        if return_distance <= 0.5:
+            return True
+        speed = max(1.0, float(me.get("stats", {}).get("walk_speed", 11.7)))
+        if any(w and w.get("kind") == "laser" and float(w.get("charge", 0)) > 0
+               for w in me.get("weapons", [])):
+            speed *= float(me.get("stats", {}).get("charge_move_mult", 0.5))
+        travel_time = (dist2(pos, point) + return_distance) / max(1.0, speed)
+        time_left = float(zone["shrink_end"]) - float(obs["t"])
+        return travel_time + action_seconds + params["zone_lead_seconds"] <= time_left
+
+    def safe(point, threat_radius, action_seconds=0.0):
         if dist2(point, center) > max(0.0, radius - min(12.0, radius * 0.05)):
             return False
         if abs(point[2] - pos[2]) > 4.0:
+            return False
+        if not zone_detour_safe(point, action_seconds):
             return False
         return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
 
@@ -84,6 +102,9 @@ def choose_variant_goal(obs, world, mode, parameters=None):
             return False
         if dist2(point, center) > max(0.0, radius - min(12.0, radius * 0.05)):
             return False
+        rise_speed = max(1.0, float(me.get("stats", {}).get("max_rise_speed", 10.0)))
+        if not zone_detour_safe(point, height / rise_speed):
+            return False
         return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
 
     # A full repair and three cubes can justify a detour, including early in a match.
@@ -91,10 +112,12 @@ def choose_variant_goal(obs, world, mode, parameters=None):
         point = drop["pos"]
         radius_drop = float(drop.get("radius", 8.0))
         distance = dist2(pos, point)
+        capture_remaining = max(0.0, float(drop.get("capture_s", 4.0)) -
+                                (float(drop.get("progress", 0)) if drop.get("holder") == me["id"] else 0.0))
         if (drop.get("lands_in", 0) <= 0
                 and drop.get("holder") in (None, me["id"])
                 and distance < (100.0 if mode == "scavenger" else 60.0)
-                and safe(point, 45.0)):
+                and safe(point, 45.0, capture_remaining)):
             if distance <= radius_drop * 0.6:
                 return tuple(pos), "capture"
             return tuple(point), "drop"

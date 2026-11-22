@@ -63,6 +63,48 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(kind, "zone")
         self.assertEqual(goal[:2], (90.0, 0.0))
 
+    def test_loot_detour_reserves_time_to_reach_next_zone(self):
+        self.obs["self"]["pos"] = [60.0, 0.0, 0.0]
+        self.obs["cubes"] = [{"id": 5000, "pos": [130.0, 0.0, 0.0]}]
+        self.obs["t"] = 80.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
+        self.obs["t"] = 90.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+        self.obs["cubes"][0]["pos"] = [70.0, 0.0, 0.0]
+        self.obs["t"] = 109.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
+
+    def test_laser_charge_reduces_time_available_for_a_detour(self):
+        self.obs["t"] = 80.0
+        self.obs["self"]["pos"] = [60.0, 0.0, 0.0]
+        self.obs["self"]["weapons"][1] = {"kind": "laser", "charge": 0.5}
+        self.obs["cubes"] = [{"id": 5000, "pos": [130.0, 0.0, 0.0]}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+
+    def test_weapon_and_flight_detours_respect_zone_deadline(self):
+        self.obs["self"]["pos"] = [60.0, 0.0, 0.0]
+        self.obs["pickups"] = [{"id": 8000, "kind": "laser", "pos": [130.0, 0.0, 0.0]}]
+        self.obs["t"] = 80.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "weapon")
+        self.obs["t"] = 90.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+        self.obs["pickups"] = []
+        self.obs["self"].update({"hp": 1400, "max_hp": 1400, "energy": 100})
+        self.obs["cubes"] = [{"id": 5000, "pos": [130.0, 0.0, 20.0]}]
+        self.obs["t"] = 80.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
+        self.obs["t"] = 86.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+
+    def test_drop_detour_accounts_for_remaining_capture_time(self):
+        self.obs["t"] = 94.4
+        self.obs["self"]["pos"] = [110.0, 0.0, 0.0]
+        self.obs["drops"] = [{"pos": [110.0, 0.0, 0.0], "radius": 8.0,
+                              "lands_in": 0, "holder": 2, "capture_s": 4.0, "progress": 0.0}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+        self.obs["drops"][0]["progress"] = 3.0
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "capture")
+
     def test_scavenger_pursues_cube_but_survivor_holds(self):
         self.obs["cubes"] = [{"id": 5000, "pos": [40.0, 0.0, 0.0]}]
         self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
