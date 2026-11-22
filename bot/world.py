@@ -8,6 +8,8 @@ class World:
     def __init__(self, map_dir=None):
         self.ready = False
         self.prisms = []
+        self.prism_zbounds = []
+        self.los_cache = {}
         self.terrain = None
         self.nx = self.ny = 0
         self.min_x = self.min_y = self.step = 1.0
@@ -24,6 +26,7 @@ class World:
                 data = json.loads(world_path.read_text())
                 self.prisms = data.get("prisms", [])
                 self.prism_bounds = []
+                self.prism_zbounds = []
                 for prism in self.prisms:
                     ring = prism.get("ring", [])
                     if ring:
@@ -31,6 +34,8 @@ class World:
                         self.prism_bounds.append((min(xs), min(ys), max(xs), max(ys)))
                     else:
                         self.prism_bounds.append((0,0,0,0))
+                    self.prism_zbounds.append((float(prism.get("base", -1e9)),
+                                               float(prism.get("top", 1e9))))
                 t = data["terrain"]
                 self.nx, self.ny = int(t["nx"]), int(t["ny"])
                 self.min_x, self.min_y, self.step = float(t["minX"]), float(t["minY"]), float(t["step"])
@@ -82,14 +87,39 @@ class World:
     def line_of_sight(self, a, b):
         if not self.ready:
             return True
+        key = (
+            round(a[0]), round(a[1]), round(a[2]),
+            round(b[0]), round(b[1]), round(b[2]),
+        )
+        cached = self.los_cache.get(key)
+        if cached is not None:
+            return cached
         dx, dy, dz = b[0]-a[0], b[1]-a[1], b[2]-a[2]
-        n = max(3, int(math.sqrt(dx*dx+dy*dy+dz*dz)/3.0))
+        distance = math.sqrt(dx*dx+dy*dy+dz*dz)
+        # A 3 m sample interval is already below the mech radius. Cap long
+        # sightlines to avoid work proportional to arena distance.
+        n = max(3, min(96, int(distance/3.0)))
+        minx, maxx = min(a[0], b[0]), max(a[0], b[0])
+        miny, maxy = min(a[1], b[1]), max(a[1], b[1])
+        minz, maxz = min(a[2], b[2]), max(a[2], b[2])
         for i in range(1, n):
             t = i/n
             x, y, z = a[0]+dx*t, a[1]+dy*t, a[2]+dz*t
-            for p in self.prisms:
+            for j, p in enumerate(self.prisms):
+                bounds = self.prism_bounds[j]
+                if x < bounds[0] or x > bounds[2] or y < bounds[1] or y > bounds[3]:
+                    continue
+                zb = self.prism_zbounds[j]
+                if z < zb[0] or z > zb[1]:
+                    continue
                 if point_in_prism(x, y, z, p):
+                    if len(self.los_cache) >= 128:
+                        self.los_cache.clear()
+                    self.los_cache[key] = False
                     return False
+        if len(self.los_cache) >= 128:
+            self.los_cache.clear()
+        self.los_cache[key] = True
         return True
 
     def route(self, start, goal):
