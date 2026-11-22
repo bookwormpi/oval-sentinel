@@ -99,9 +99,6 @@ class World:
         # A 3 m sample interval is already below the mech radius. Cap long
         # sightlines to avoid work proportional to arena distance.
         n = max(3, min(96, int(distance/3.0)))
-        minx, maxx = min(a[0], b[0]), max(a[0], b[0])
-        miny, maxy = min(a[1], b[1]), max(a[1], b[1])
-        minz, maxz = min(a[2], b[2]), max(a[2], b[2])
         for i in range(1, n):
             t = i/n
             x, y, z = a[0]+dx*t, a[1]+dy*t, a[2]+dz*t

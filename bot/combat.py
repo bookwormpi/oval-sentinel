@@ -70,7 +70,7 @@ def predict_target(me, target, weapon, config):
             flight = horizontal / max(1e-3, speed * math.cos(pitch))
             qx = r[0] + relative_vel[0] * flight
             qy = r[1] + relative_vel[1] * flight
-            qz = r[2] + relative_vel[2] * flight + 0.5 * gravity * flight * flight
+            qz = r[2] + relative_vel[2] * flight - 0.5 * gravity * flight * flight
             yaw = math.atan2(qy, qx)
             next_pitch = ballistic_pitch(math.hypot(qx, qy), qz, speed, gravity)
             if next_pitch is None:

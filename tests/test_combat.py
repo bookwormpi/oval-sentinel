@@ -1,7 +1,7 @@
 import math
 import sys, unittest
 sys.path.insert(0, "bot")
-from combat import combat_action, projectile_dodge
+from combat import combat_action, projectile_dodge, predict_target
 
 
 class CombatTests(unittest.TestCase):
@@ -59,6 +59,18 @@ class CombatTests(unittest.TestCase):
         self.target["vel"] = [100.0, 0.0, 0.0]
         aim, _, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)
         self.assertAlmostEqual(aim[0], math.pi/2, places=3)
+
+    def test_mortar_aim_accounts_for_gravity_during_target_prediction(self):
+        mortar = {"kind": "mortar", "cooldown": 0.0,
+                  "stats": {"speed": 72, "gravity": 22, "range": 235}}
+        _, pitch, _, _ = predict_target(
+            self.me,
+            {"id": 2, "kind": "mech", "pos": [100.0, 0.0, 0.0],
+             "vel": [0.0, 0.0, 10.0], "aim": [0.0, 0.0]},
+            mortar,
+            self.config,
+        )
+        self.assertGreater(pitch, 0.0)
 
 
 if __name__ == "__main__":
