@@ -1,6 +1,6 @@
 import sys, unittest
 sys.path.insert(0, "bot")
-from geometry import intercept_time, ballistic_pitch, point_in_ring, wrap_angle
+from geometry import intercept_time, ballistic_pitch, point_in_ring, wrap_angle, slew_angle
 
 class GeometryTests(unittest.TestCase):
     def test_intercept_stationary(self):
@@ -17,6 +17,9 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(point_in_ring(15,5,ring))
     def test_angle_wrap(self):
         self.assertLess(abs(wrap_angle(3.2)), 3.2)
+    def test_slew_wraps_and_limits_yaw_delta(self):
+        result = slew_angle(3.0, -3.0, 4.0, 0.1)
+        self.assertLess(abs(wrap_angle(result-3.0)), 0.41)
 
 if __name__ == "__main__":
     unittest.main()

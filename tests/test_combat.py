@@ -53,6 +53,13 @@ class CombatTests(unittest.TestCase):
         _, urgency = projectile_dodge(obs, self.me)
         self.assertEqual(urgency, 0.0)
 
+    def test_shooter_velocity_is_used_for_gun_interception(self):
+        self.me["vel"] = [100.0, 0.0, 0.0]
+        self.target["pos"] = [0.0, 100.0, 0.0]
+        self.target["vel"] = [100.0, 0.0, 0.0]
+        aim, _, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)
+        self.assertAlmostEqual(aim[0], math.pi/2, places=3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,6 +13,11 @@ def wrap_angle(a):
 def angle_delta(a, b):
     return wrap_angle(a - b)
 
+def slew_angle(actual, command, rate, dt):
+    """Approximate bounded angular slew over dt seconds."""
+    delta = angle_delta(command, actual)
+    return wrap_angle(actual + clamp(delta, -rate*dt, rate*dt))
+
 def unit2(x, y):
     n = math.hypot(x, y)
     return (x / n, y / n) if n > 1e-9 else (0.0, 0.0)

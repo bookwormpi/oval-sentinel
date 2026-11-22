@@ -1,14 +1,14 @@
 """Threat-weighted targeting and weapon-aware combat for Mech Royale."""
 from __future__ import annotations
 import math
-from geometry import clamp, dist2, dist3, wrap_angle, angle_delta, intercept_time, ballistic_pitch
+from geometry import clamp, dist2, dist3, wrap_angle, angle_delta, intercept_time, ballistic_pitch, slew_angle
 
 
 def _bearing_to(a, b):
     return math.atan2(b[1] - a[1], b[0] - a[0])
 
 
-def choose_target(obs, me, recent_attacker=None):
+def choose_target(obs, me, recent_attacker=None, current_target_id=None):
     """Prefer enemies who are close, aiming at us, charging, or recently damaging us."""
     candidates = []
     mp = me["pos"]
@@ -34,6 +34,8 @@ def choose_target(obs, me, recent_attacker=None):
         score = kind * low_hp * threat / (22.0 + d)
         if d < 32:
             score *= 1.25
+        if current_target_id is not None and e.get("id") == current_target_id:
+            score *= 1.12
         candidates.append((score, e))
     return max(candidates, key=lambda x: x[0])[1] if candidates else None
 
@@ -47,12 +49,14 @@ def predict_target(me, target, weapon, config):
     aimpoint = (tp[0], tp[1], tp[2] + target_h)
     r = tuple(aimpoint[i] - origin[i] for i in range(3))
     vel = tuple(target.get("vel", [0, 0, 0]))
+    own_vel = tuple(me.get("vel", [0, 0, 0]))
+    relative_vel = tuple(vel[i] - own_vel[i] for i in range(3))
     kind = weapon["kind"]
     stats = weapon.get("stats", {})
     if kind == "gun":
         speed = float(stats.get("speed", 252))
-        t = min(1.5, intercept_time(r, vel, speed))
-        q = tuple(r[i] + vel[i] * t for i in range(3))
+        t = min(1.5, intercept_time(r, relative_vel, speed))
+        q = tuple(r[i] + relative_vel[i] * t for i in range(3))
         return math.atan2(q[1], q[0]), math.atan2(q[2], max(1e-6, math.hypot(q[0], q[1]))), dist3(origin, aimpoint), q
     if kind == "mortar":
         horizontal = math.hypot(r[0], r[1])
@@ -64,9 +68,9 @@ def predict_target(me, target, weapon, config):
             return yaw, 0.0, dist3(origin, aimpoint), r
         for _ in range(3):
             flight = horizontal / max(1e-3, speed * math.cos(pitch))
-            qx = r[0] + vel[0] * flight
-            qy = r[1] + vel[1] * flight
-            qz = r[2] + vel[2] * flight + 0.5 * gravity * flight * flight
+            qx = r[0] + relative_vel[0] * flight
+            qy = r[1] + relative_vel[1] * flight
+            qz = r[2] + relative_vel[2] * flight + 0.5 * gravity * flight * flight
             yaw = math.atan2(qy, qx)
             next_pitch = ballistic_pitch(math.hypot(qx, qy), qz, speed, gravity)
             if next_pitch is None:
@@ -98,7 +102,7 @@ def _weapon_aim_priority(w, distance):
     return -1
 
 
-def combat_action(obs, me, target, config):
+def combat_action(obs, me, target, config, world=None):
     """Choose the best weapon's aim; independently gate each trigger on actual alignment."""
     actual = me.get("aim", [0.0, 0.0])
     aim = [float(actual[0]), float(actual[1])]
@@ -107,6 +111,12 @@ def combat_action(obs, me, target, config):
     candidates = []
     solutions = {}
     if target:
+        target_pos = target["pos"]
+        aimpoint = (target_pos[0], target_pos[1],
+                    target_pos[2] + (4.5 if target.get("kind") == "mech" else 1.75))
+        origin = (me["pos"][0], me["pos"][1],
+                  me["pos"][2] + float(me.get("stats", {}).get("muzzle_height", 7.0)))
+        has_los = world is None or world.line_of_sight(origin, aimpoint)
         for slot, w in enumerate(weapons[:2]):
             if not w:
                 continue
@@ -125,14 +135,25 @@ def combat_action(obs, me, target, config):
                 continue
             yaw, pitch, distance, rel = solutions[slot]
             stats = w.get("stats", {})
-            yaw_err = abs(angle_delta(yaw, float(actual[0])))
-            pitch_err = abs(pitch - float(actual[1]))
+            dt = 0.1
+            stats_me = me.get("stats", {})
+            projected_yaw = slew_angle(float(actual[0]), yaw,
+                                       float(stats_me.get("turn_rate", 4.0)), dt)
+            projected_pitch = clamp(
+                float(actual[1]) + clamp(pitch - float(actual[1]),
+                                         -float(stats_me.get("pitch_rate", 3.0))*dt,
+                                         float(stats_me.get("pitch_rate", 3.0))*dt),
+                float(config["mech"].get("min_pitch", -0.7)),
+                float(config["mech"].get("max_pitch", 1.3)))
+            yaw_err = abs(angle_delta(yaw, projected_yaw))
+            pitch_err = abs(pitch - projected_pitch)
             aligned = yaw_err < 0.075 and pitch_err < 0.075
             yaw_aligned = yaw_err < math.radians(float(stats.get("cone_deg", 30)) * 0.5)
             cooldown = float(w.get("cooldown", 0))
             kind = w["kind"]
+            direct_weapon_has_los = has_los or kind == "mortar"
             if kind == "gun":
-                fire[slot] = (aligned and distance < float(stats.get("range", 230)) * 0.985
+                fire[slot] = (direct_weapon_has_los and aligned and distance < float(stats.get("range", 230)) * 0.985
                               and cooldown <= 0.04 and int(w.get("ammo", 0)) > 0
                               and float(w.get("reload", 0)) <= 0)
             elif kind == "laser":
@@ -146,13 +167,13 @@ def combat_action(obs, me, target, config):
                 else:
                     # Once charging starts, keep holding while tracking the target;
                     # requiring perfect alignment every frame causes premature release.
-                    fire[slot] = bool(in_range and (aligned or charge > 0.01))
+                    fire[slot] = bool(direct_weapon_has_los and in_range and (aligned or charge > 0.01))
                 # If target disappears, retain the charge until full rather than wasting it.
                 if charge >= min_charge and not target:
                     fire[slot] = False
             elif kind == "lightning":
                 in_range = distance < float(stats.get("range", 45)) * 0.98
-                fire[slot] = (in_range and yaw_aligned and cooldown <= 0.04
+                fire[slot] = (direct_weapon_has_los and in_range and yaw_aligned and cooldown <= 0.04
                               and float(me.get("energy", 0)) >= float(stats.get("energy", 3)))
             elif kind == "mortar":
                 horizontal = math.hypot(rel[0], rel[1])

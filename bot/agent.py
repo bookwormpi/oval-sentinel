@@ -19,6 +19,7 @@ class MechRoyaleBot:
         self.last_attacker = None
         self.last_damage_t = -999.0
         self.tick_count = 0
+        self.current_target_id = None
 
     def _threat_vector(self, obs, me):
         """Repulsion from nearby attackers and recent weapon sounds."""
@@ -85,7 +86,8 @@ class MechRoyaleBot:
                 self.last_damage_t = now
 
         recent_attacker = self.last_attacker if now-self.last_damage_t < 2.5 else None
-        target = choose_target(obs, me, recent_attacker)
+        target = choose_target(obs, me, recent_attacker, self.current_target_id)
+        self.current_target_id = target.get("id") if target else None
         goal, goal_kind = choose_goal(obs, self.world)
         base_direction, waypoint = steer(obs, self.world, goal)
         goal_distance = dist2(me["pos"][:2], goal[:2])
@@ -115,7 +117,7 @@ class MechRoyaleBot:
             move_scale = 1.0
 
         # If a recent attacker is behind us, face it to eliminate the 1.5x rear-hit penalty.
-        aim, fire, reload_now, target_info = combat_action(obs, me, target, self.config)
+        aim, fire, reload_now, target_info = combat_action(obs, me, target, self.config, self.world)
         for event in obs.get("events", []):
             if event.get("type") == "damaged" and event.get("bearing") is not None:
                 if event.get("rear") or target is None:

@@ -13,6 +13,10 @@ A modular, standard-library-only Python bot for the official `mechfight/1` proto
 - Fixed upgrade stacking: the first version treated any owned upgrade as unavailable, even when the official definition allowed multiple stacks. The new selector counts stacks and respects each upgrade's configured maximum.
 - Reworked upgrade values around the actual sample-kit upgrade IDs (`plating`, `armor`, `nanites`, `reactor`, `capacitor`, etc.).
 - Bounded local obstacle-route candidate testing. The earlier all-vertices search could exceed the 50 ms decision budget on some map positions.
+- Added shooter-relative gun and mortar lead so interception accounts for the bot's own velocity.
+- Added bounded 100 ms yaw/pitch slew prediction before firing direct weapons.
+- Suppressed direct-fire shots on blocked lines of sight while retaining mortar fire over cover.
+- Added modest hysteresis for the current combat target to reduce aim and target-selection churn.
 
 ## Architecture
 
