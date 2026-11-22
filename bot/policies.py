@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from adaptive import DEFAULT_PARAMETERS
-from geometry import dist2, unit2
+from geometry import angle_delta, dist2, unit2
 from navigation import zone_state
 from strategy import WEAPON_VALUE, SWAP_MARGIN, effective_walk_speed
 
@@ -190,6 +190,23 @@ def choose_crate(obs, last_damage_t, parameters=None):
     return {"id": crate["id"], "kind": "crate", "pos": crate["pos"], "vel": [0, 0, 0]}
 
 
+def tactician_goal(obs, world, last_damage_t, parameters=None):
+    """Reposition early when idle and stop detouring while recovering."""
+    goal, kind = choose_variant_goal(obs, world, "scavenger", parameters)
+    if kind in ("zone", "capture"):
+        return goal, kind
+    me = obs["self"]
+    if (float(me.get("hp", 1)) < 0.7 * float(me.get("max_hp", 1))
+            and float(obs["t"]) - last_damage_t < 8.0):
+        goal, kind = tuple(me["pos"]), "hold"
+    if kind == "hold":
+        params = parameters if parameters is not None else DEFAULT_PARAMETERS
+        early_zone = _zone_goal(obs, world, max(30.0, params["zone_lead_seconds"]))
+        if early_zone is not None:
+            return early_zone
+    return goal, kind
+
+
 def vanguard_target(obs, current_target, last_damage_t, parameters=None):
     """Avoid chasing distant drones; farm a nearby crate when no mech threatens."""
     me = obs["self"]
@@ -256,6 +273,59 @@ def vanguard_movement(obs, world, target, goal_kind, base, evasion, dodge,
             if not world.line_of_sight((end[0], end[1], end[2] + eye), threat_point):
                 return candidate, speed
     return walkable[0][0], speed
+
+
+def tactician_movement(obs, world, target, goal_kind, base, evasion, dodge,
+                       danger, projectile_urgency):
+    """Choose a walkable short step that reduces exposure to multiple threats."""
+    direction, speed = vanguard_movement(
+        obs, world, target, goal_kind, base, evasion, dodge, danger, projectile_urgency)
+    if goal_kind == "zone" or not obs["self"]["in_zone"]:
+        return direction, speed
+    if goal_kind == "capture" and max(danger, projectile_urgency) <= 0.12:
+        return direction, speed
+    me = obs["self"]
+    pos = me["pos"]
+    threats = [e for e in obs.get("mechs", [])
+               if e.get("kind") == "mech" and e.get("id") != me["id"]
+               and dist2(pos, e["pos"]) < 130]
+    if not threats:
+        return direction, speed
+    center, radius = zone_state(obs["zone"], obs["t"])
+    hp_frac = float(me.get("hp", 1)) / max(1.0, float(me.get("max_hp", 1)))
+    nearest = min(threats, key=lambda e: dist2(pos, e["pos"]))
+    eye = float(me.get("stats", {}).get("eye_height", 8.0))
+    threat_eye = (nearest["pos"][0], nearest["pos"][1], nearest["pos"][2] + 8.0)
+    threat_weights = []
+    for enemy in threats:
+        distance = dist2(pos, enemy["pos"])
+        bearing = math.atan2(pos[1] - enemy["pos"][1], pos[0] - enemy["pos"][0])
+        aiming = abs(angle_delta(float(enemy.get("aim", [0.0])[0]), bearing)) < 0.55
+        weight = (1.0 - distance / 130.0) * (1.0 + 0.6 * aiming + 0.5 * bool(enemy.get("charging")))
+        threat_weights.append((enemy, distance, weight))
+    candidates = [(0.0, 0.0)]
+    if direction != (0.0, 0.0):
+        candidates.append(direction)
+    candidates.extend((math.cos(i * math.pi / 4), math.sin(i * math.pi / 4)) for i in range(8))
+    best, best_score = (0.0, 0.0), -float("inf")
+    for candidate in candidates:
+        end = (pos[0] + candidate[0] * 6, pos[1] + candidate[1] * 6, pos[2])
+        if (dist2(end, center) > radius and dist2(end, center) > dist2(pos, center)):
+            continue
+        score = 0.25 * (candidate[0] * direction[0] + candidate[1] * direction[1])
+        score += 1.5 * projectile_urgency * (candidate[0] * dodge[0] + candidate[1] * dodge[1])
+        for enemy, distance, weight in threat_weights:
+            score += weight * (dist2(end, enemy["pos"]) - distance) / 6.0
+        if score + (0.8 if hp_frac < 0.5 else 0.0) <= best_score:
+            continue
+        if candidate != (0.0, 0.0) and world.blocked(tuple(pos), end):
+            continue
+        if hp_frac < 0.5 and not world.line_of_sight(
+                (end[0], end[1], end[2] + eye), threat_eye):
+            score += 0.8
+        if score > best_score:
+            best, best_score = candidate, score
+    return best, 0.9 if best != (0.0, 0.0) else 0.0
 
 
 def variant_movement(mode, obs, target, goal_kind, base, evasion, dodge, danger, projectile_urgency):

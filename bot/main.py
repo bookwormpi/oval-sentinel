@@ -8,7 +8,7 @@ from adaptive import load_policy
 
 def main():
     strategy = selected_strategy()
-    if strategy == "adaptive":
+    if strategy in ("adaptive", "tactician"):
         load_policy()
     if strategy == "neural":
         from neural import NeuralBot, load_model

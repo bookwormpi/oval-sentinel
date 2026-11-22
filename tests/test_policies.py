@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, "bot")
 from agent import MechRoyaleBot
-from policies import choose_crate, choose_variant_goal, variant_movement, vanguard_movement, vanguard_target
+from policies import (choose_crate, choose_variant_goal, variant_movement, vanguard_movement,
+                      vanguard_target, tactician_goal, tactician_movement)
 from strategy import selected_strategy
 from geometry import angle_delta, slew_angle
 
@@ -69,6 +70,20 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(choose_variant_goal(self.obs, self.world, "survivor")[1], "hold")
         self.obs["self"]["weapons"][1] = {"kind": "laser", "charge": 0.5}
         self.assertEqual(choose_variant_goal(self.obs, self.world, "survivor")[1], "zone")
+
+    def test_tactician_repositions_early_only_when_no_loot_objective(self):
+        self.obs["t"] = 78
+        self.obs["self"]["pos"] = [120.0, 0.0, 0.0]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+        self.assertEqual(tactician_goal(self.obs, self.world, -100)[1], "zone")
+        self.obs["cubes"] = [{"id": 5000, "pos": [110.0, 0.0, 0.0]}]
+        self.assertEqual(tactician_goal(self.obs, self.world, -100)[1], "cube")
+
+    def test_tactician_interrupts_loot_detour_to_recover_after_damage(self):
+        self.obs["self"].update({"hp": 600, "max_hp": 1400})
+        self.obs["cubes"] = [{"id": 5000, "pos": [30.0, 0.0, 0.0]}]
+        self.assertEqual(tactician_goal(self.obs, self.world, -1)[1], "hold")
+        self.assertEqual(tactician_goal(self.obs, self.world, -9)[1], "cube")
 
     def test_outside_zone_never_targets_current_position_when_center_is_known(self):
         self.obs["self"]["pos"] = [20.0, 0.0, 0.0]
@@ -221,6 +236,30 @@ class PolicyTests(unittest.TestCase):
         self.assertGreater(speed, 0)
         self.assertLessEqual(direction[0], 0)
 
+    def test_tactician_avoids_moving_toward_a_second_attacker(self):
+        self.obs["mechs"] = [
+            {"id": 3, "kind": "mech", "pos": [-40.0, 0.0, 0.0], "aim": [0.0, 0.0]},
+            {"id": 4, "kind": "mech", "pos": [35.0, 0.0, 0.0], "aim": [math.pi, 0.0]},
+        ]
+        direction, speed = tactician_movement(self.obs, self.world, self.obs["mechs"][0], "hold",
+                                               (0, 0), (0, 0), (0, 0), 0.6, 0)
+        self.assertLess(direction[0], 1e-8)
+        self.assertGreater(abs(direction[1]), 0.9)
+        self.assertGreater(speed, 0)
+
+    def test_tactician_stays_inside_capture_ring_when_threat_is_distant(self):
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [100.0, 0.0, 0.0]}]
+        self.assertEqual(tactician_movement(self.obs, self.world, None, "capture",
+                                            (0, 0), (0, 0), (0, 0), 0, 0), ((0.0, 0.0), 0.0))
+
+    def test_tactician_does_not_replace_mandatory_zone_escape(self):
+        self.obs["self"]["in_zone"] = False
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [-40.0, 0.0, 0.0]}]
+        direction, speed = tactician_movement(self.obs, self.world, self.obs["mechs"][0], "zone",
+                                               (-1, 0), (1, 0), (0, 0), 0.8, 0)
+        self.assertEqual(direction, (-1.0, 0.0))
+        self.assertEqual(speed, 1.0)
+
     def test_vanguard_moves_inward_when_every_escape_points_outside_small_zone(self):
         self.obs["zone"]["radius"] = 10.0
         self.obs["zone"]["next_radius"] = 0.0
@@ -289,6 +328,19 @@ class PolicyTests(unittest.TestCase):
                             "match": {"tick_hz": 20, "decide_every": 2},
                             "vision": {"fov_deg": 120}}}
         return MechRoyaleBot(hello, strategy="vanguard", world=self.world)
+
+    def test_tactician_preserves_adaptive_targeting_and_fire(self):
+        baseline = self.radar_bot()
+        from adaptive import DEFAULT_PARAMETERS
+        baseline = MechRoyaleBot(baseline.hello, strategy="adaptive", world=self.world,
+                                 policy_parameters=DEFAULT_PARAMETERS)
+        candidate = MechRoyaleBot(baseline.hello, strategy="tactician", world=self.world,
+                                  policy_parameters=DEFAULT_PARAMETERS)
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [100.0, 0.0, 0.0],
+                               "vel": [0.0, 0.0, 0.0], "aim": [math.pi, 0.0], "hp": 1400}]
+        first, second = baseline.act(self.obs), candidate.act(self.obs)
+        self.assertEqual((first["aim"], first["fire"], first["reload"]),
+                         (second["aim"], second["fire"], second["reload"]))
 
     def test_idle_scan_covers_full_circle_from_actual_torso_angle(self):
         bot = self.radar_bot()

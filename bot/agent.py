@@ -7,7 +7,8 @@ from navigation import choose_goal, steer
 from combat import choose_target, combat_action, projectile_dodge
 from strategy import choose_upgrade, choose_take, survival_boost, should_jump, selected_strategy
 from geometry import dist2, unit2, angle_delta, wrap_angle
-from policies import choose_variant_goal, choose_crate, variant_movement, vanguard_target, vanguard_movement
+from policies import (choose_variant_goal, choose_crate, variant_movement, vanguard_target,
+                      vanguard_movement, tactician_goal, tactician_movement)
 from adaptive import load_policy, validate_parameters
 
 
@@ -27,10 +28,10 @@ class MechRoyaleBot:
         self.scan_sound_deadline = 0.0
         self.scan_sound_ready = 0.0
         self.strategy = selected_strategy(strategy)
-        if policy_parameters is not None and self.strategy != "adaptive":
-            raise ValueError("Policy parameters are only supported by the adaptive strategy")
+        if policy_parameters is not None and self.strategy not in ("adaptive", "tactician"):
+            raise ValueError("Policy parameters are only supported by adaptive-derived strategies")
         self.policy_parameters = (validate_parameters(policy_parameters) if policy_parameters is not None
-                                  else load_policy() if self.strategy == "adaptive" else None)
+                                  else load_policy() if self.strategy in ("adaptive", "tactician") else None)
         if self.strategy != "baseline":
             self.name = f"Oval Sentinel {self.strategy}"
 
@@ -104,10 +105,12 @@ class MechRoyaleBot:
         target = choose_target(obs, me, recent_attacker, self.current_target_id)
         if self.strategy == "baseline":
             goal, goal_kind = choose_goal(obs, self.world)
+        elif self.strategy == "tactician":
+            goal, goal_kind = tactician_goal(obs, self.world, self.last_damage_t, self.policy_parameters)
         else:
             mode = "scavenger" if self.strategy in ("vanguard", "adaptive") else self.strategy
             goal, goal_kind = choose_variant_goal(obs, self.world, mode, self.policy_parameters)
-        if self.strategy in ("vanguard", "adaptive") and goal_kind not in ("zone", "capture"):
+        if self.strategy in ("vanguard", "adaptive", "tactician") and goal_kind not in ("zone", "capture"):
             target = vanguard_target(obs, target, self.last_damage_t, self.policy_parameters)
         self.current_target_id = target.get("id") if target else None
         if self.strategy != "baseline" and goal_kind in ("hold", "capture"):
@@ -120,7 +123,7 @@ class MechRoyaleBot:
         if nearby >= 2:
             danger = max(danger, 0.60)
         dodge, projectile_urgency = projectile_dodge(
-            obs, me, correct_side=self.strategy in ("vanguard", "adaptive"), config=self.config)
+            obs, me, correct_side=self.strategy in ("vanguard", "adaptive", "tactician"), config=self.config)
         urgency = max(danger, projectile_urgency)
         # Rooftop loot is only ever chosen as a goal when calm and safe (see
         # choose_variant_goal); still require calm here too, since the goal can
@@ -131,8 +134,9 @@ class MechRoyaleBot:
                     and me["pos"][2] < goal[2] - 1.0)
 
         # Zone recovery outranks combat evasion; otherwise break away from focused attackers.
-        if self.strategy in ("vanguard", "adaptive"):
-            (mx, my), move_scale = vanguard_movement(
+        if self.strategy in ("vanguard", "adaptive", "tactician"):
+            movement = tactician_movement if self.strategy == "tactician" else vanguard_movement
+            (mx, my), move_scale = movement(
                 obs, self.world, target, goal_kind, base_direction,
                 evasion, dodge, danger, projectile_urgency)
         elif self.strategy != "baseline":
@@ -163,7 +167,7 @@ class MechRoyaleBot:
         self.current_combat_target = target
         aim, fire, reload_now, target_info = combat_action(
             obs, me, target, self.config, self.world,
-            correct_mortar=self.strategy != "baseline", precision=self.strategy in ("vanguard", "adaptive"))
+            correct_mortar=self.strategy != "baseline", precision=self.strategy in ("vanguard", "adaptive", "tactician"))
         defensive_events = [event for event in damage_events if event.get("bearing") is not None
                             and (event.get("rear") or target is None)]
         damage_bearing = None
@@ -171,7 +175,7 @@ class MechRoyaleBot:
             worst = max(defensive_events, key=lambda event: float(event.get("amount", 0)))
             damage_bearing = float(worst["bearing"])
             aim = [damage_bearing, aim[1]]
-            if target and self.strategy in ("vanguard", "adaptive"):
+            if target and self.strategy in ("vanguard", "adaptive", "tactician"):
                 aim, fire, reload_now, target_info = combat_action(
                     obs, me, target, self.config, self.world, correct_mortar=True,
                     precision=True, commanded_aim=aim)

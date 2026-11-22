@@ -34,6 +34,7 @@ Docker build argument alone will not select a strategy for a submission.
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
 | `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization, short-range obstacle-aware evasion, upgrade valuation, finishing-blow target priority, and cover-seeking retreat (see below). |
 | `adaptive` | Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
+| `tactician` | Experimental adaptive-derived policy that repositions early when idle, pauses loot detours after heavy damage, and chooses short, walkable escape steps against multiple opponents. Uses the same targeting and `bot/adaptive_policy.json`. |
 | `neural` | Experimental neural movement and aim, with automatic Vanguard-derived actions. Requires `bot/neural_policy.json`. |
 
 The alternatives also correct a mortar-aiming defect that is deliberately
@@ -72,6 +73,14 @@ and terrain-aware line of sight. Rear-hit facing updates also recheck the
 trigger against the new command. These are control and safety corrections;
 their effect on tournament placement is not established by unit tests or the
 approximate simulator. Terrain LOS is sampled and may miss narrow obstructions.
+In four fresh seeds with two mirrored eight-bot matches per seed, the combined
+changes in `13fb6d0` versus `631148f` produced a mean normalized placement
+difference of -0.098 (seed-level standard error 0.009) and a mean survival
+difference of -12.9 seconds (seed-level standard error 4.1 seconds). This small,
+approximate simulation suggests a regression, not a validated improvement.
+It does not identify which change caused the difference or predict tournament
+performance. The user subsequently reported a tournament score of 2.54, up
+from the previously reported 2.31; the match sample is unknown.
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash

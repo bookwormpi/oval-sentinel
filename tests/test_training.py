@@ -76,12 +76,14 @@ class TrainingTests(unittest.TestCase):
 
     def test_missing_submission_policy_fails_before_starting_bot(self):
         import main
-        with patch("main.selected_strategy", return_value="adaptive"), \
-                patch("main.load_policy", side_effect=FileNotFoundError("missing policy")), \
-                patch("main.run") as run:
-            with self.assertRaises(FileNotFoundError):
-                main.main()
-            run.assert_not_called()
+        for strategy in ("adaptive", "tactician"):
+            with self.subTest(strategy=strategy), \
+                    patch("main.selected_strategy", return_value=strategy), \
+                    patch("main.load_policy", side_effect=FileNotFoundError("missing policy")), \
+                    patch("main.run") as run:
+                with self.assertRaises(FileNotFoundError):
+                    main.main()
+                run.assert_not_called()
 
     def test_mirrored_evaluation_and_normalized_rewards(self):
         calls = []
