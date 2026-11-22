@@ -1,6 +1,5 @@
 """Upgrade valuation and conservative energy policy."""
 from __future__ import annotations
-from collections import Counter
 import os
 
 # Change this value and submit the resulting commit to test a different policy.
@@ -15,49 +14,91 @@ def selected_strategy(mode=None):
         raise ValueError(f"Unknown strategy {mode!r}; choose from {', '.join(STRATEGIES)}")
     return mode
 
-# Higher values indicate better long-term survival / expected combat value.
-UPGRADE_BASE = {
-    "armor": 132, "plating": 128, "nanites": 120, "reactor": 105,
-    "capacitor": 98, "jets": 94, "servos": 88, "gyros": 84,
-    "sensors": 76, "gun_rate": 91, "gun_damage": 89,
-    "gun_velocity": 78, "gun_mag": 74,
-    "laser_charge": 88, "laser_damage": 86, "laser_pierce": 76,
-    "lightning_efficiency": 83, "lightning_range": 77, "lightning_chain": 75,
-    "mortar_reload": 70, "mortar_velocity": 65, "mortar_splash": 65,
+# Relative importance of each stat for overall effectiveness. This is the only
+# remaining judgment call: the *size* of each upgrade's effect is computed from
+# the mech's real current stats (see _effect_value), not guessed per upgrade.
+STAT_WEIGHT = {
+    "hp": 1.00, "armor": 1.00, "regen_per_s": 0.45, "regen_delay": 0.22,
+    "walk_speed": 0.22, "boost_speed": 0.26, "energy": 0.45, "energy_regen": 0.32,
+    "boost_drain": 0.28, "jet_drain": 0.16, "turn_rate": 0.40, "pitch_rate": 0.26,
+    "near_range_bonus": 0.14, "vision_bonus": 0.14, "hearing": 0.18,
+    "damage": 1.00, "cooldown": 0.95, "speed": 0.20, "range": 0.18,
+    "mag": 0.45, "reload": 0.26, "charge": 0.85, "pierce": 0.30,
+    "chain": 0.32, "chain_range": 0.18, "cone_deg": 0.16, "splash_radius": 0.30,
 }
+# These stats are consumed as a pool/rate (uses per energy, actions per second),
+# so a fractional drop in the raw number buys more than that fraction of extra
+# throughput: a 25% cooldown cut yields 1/0.75 - 1 = 33% more shots, not 25%.
+RECIPROCAL_STATS = {"cooldown", "reload", "charge", "boost_drain", "jet_drain"}
+
+
+def _effect_value(effect, mech_stats, weapon_stats_by_kind, vision):
+    """Real marginal value of one more copy of a single upgrade effect."""
+    parts = effect["path"].split(".")
+    leaf = parts[-1]
+    if parts[0] == "mech":
+        current = mech_stats.get(leaf)
+    elif parts[0] == "weapons" and len(parts) == 3:
+        current = weapon_stats_by_kind.get(parts[1], {}).get(leaf)
+    else:
+        current = None
+    if not isinstance(current, (int, float)):
+        return 0.0
+    new = current * effect.get("mul", 1.0) + effect.get("add", 0.0)
+    if parts[0] == "mech" and leaf == "armor":
+        # Armor is consumed as (1 - armor) multiplying incoming damage; value it
+        # by the resulting change in effective HP, not the raw armor number.
+        old_effective_hp = 1.0 / max(1e-6, 1.0 - current)
+        new_effective_hp = 1.0 / max(1e-6, 1.0 - min(0.95, new))
+        change = abs(new_effective_hp - old_effective_hp) / old_effective_hp
+    elif leaf in ("near_range_bonus", "vision_bonus"):
+        # These are meter bonuses added on top of a separate base vision range,
+        # so they start at (or near) zero; a raw-number ratio is meaningless.
+        # Value the added meters relative to the range they extend.
+        base_range = vision.get("near_range" if leaf == "near_range_bonus" else "range", 1.0)
+        change = abs(effect.get("add", 0.0)) / max(1.0, float(base_range))
+    elif leaf in RECIPROCAL_STATS and current > 1e-9 and new > 1e-9:
+        change = abs(1.0 / new - 1.0 / current) / (1.0 / current)
+    elif abs(current) > 1e-6:
+        change = abs(new - current) / abs(current)
+    else:
+        # A handful of remaining stats start at zero (e.g. laser pierce); there
+        # is no meaningful ratio, so value the raw (typically small, integer)
+        # amount gained directly rather than as a fraction of zero.
+        change = abs(effect.get("add", 0.0)) * 0.5
+    return STAT_WEIGHT.get(leaf, 0.3) * change
 
 
 def choose_upgrade(obs, hello):
     offer = obs.get("offer")
     if not offer:
         return None
-    definitions = {u["id"]: u for u in hello.get("config", {}).get("upgrades", [])}
+    config = hello.get("config", {})
+    definitions = {u["id"]: u for u in config.get("upgrades", [])}
+    vision = config.get("vision", {})
     me = obs["self"]
-    owned = Counter(me.get("upgrades", []))
+    owned = {}
+    for upgrade in me.get("upgrades", []):
+        owned[upgrade] = owned.get(upgrade, 0) + 1
     weapons = {w["kind"] for w in me.get("weapons", []) if w}
+    weapon_stats = {w["kind"]: w.get("stats", {}) for w in me.get("weapons", []) if w}
+    mech_stats = me.get("stats", {})
     hp_frac = me["hp"] / max(1.0, me["max_hp"])
     best = (-1e9, 0)
     for i, choice in enumerate(offer.get("choices", [])):
         uid = choice["id"]
         definition = definitions.get(uid, {})
         maximum = int(definition.get("max", 1))
-        if owned[uid] >= maximum:
+        if owned.get(uid, 0) >= maximum:
             continue
         req = definition.get("requires")
         if req and req not in weapons:
             continue
-        score = float(UPGRADE_BASE.get(uid, 55))
+        score = sum(_effect_value(effect, mech_stats, weapon_stats, vision)
+                    for effect in definition.get("effects", []))
         # Stack defense while it remains available; extra value when damaged or late.
         if uid in ("armor", "plating", "nanites"):
-            score += (1.0 - hp_frac) * 24 + max(0, 10-int(obs.get("alive", 16))) * 2
-        if uid in ("gun_rate", "gun_damage", "gun_velocity", "gun_mag") and "gun" in weapons:
-            score += 10
-        if uid.startswith("laser_") and "laser" in weapons:
-            score += 9
-        if uid.startswith("lightning_") and "lightning" in weapons:
-            score += 8
-        # Diminishing returns from stacks, but do not prohibit stacking.
-        score -= owned[uid] * 13
+            score += (1.0 - hp_frac) * 0.4 + max(0, 10 - int(obs.get("alive", 16))) * 0.03
         if score > best[0]:
             best = (score, i)
     return best[1] if best[0] > -1e8 else None

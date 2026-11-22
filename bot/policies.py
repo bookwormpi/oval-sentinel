@@ -166,13 +166,25 @@ def vanguard_movement(obs, world, target, goal_kind, base, evasion, dodge,
     center, radius = zone_state(obs["zone"], obs["t"])
     start = tuple(me["pos"])
     candidates = (direction, (-direction[1], direction[0]), (direction[1], -direction[0]))
+    walkable = []
     for candidate in candidates:
         end = (start[0] + candidate[0] * 6, start[1] + candidate[1] * 6, start[2])
         if dist2(end, center) > radius and dist2(end, center) > dist2(start, center):
             continue
         if not world.blocked(start, end):
-            return candidate, speed
-    return direction, speed
+            walkable.append((candidate, end))
+    if not walkable:
+        return direction, speed
+    # Nothing previously ever sought cover: a losing fight just walked (or circled)
+    # in the open. When clearly losing, prefer a walkable option that would also
+    # break the engaged target's line of sight, over the first one found.
+    if target and target.get("kind") == "mech" and me.get("hp", 1.0) < 0.4 * me.get("max_hp", 1.0):
+        eye = me.get("stats", {}).get("eye_height", 8.0)
+        threat_point = (target["pos"][0], target["pos"][1], target["pos"][2] + 4.5)
+        for candidate, end in walkable:
+            if not world.line_of_sight((end[0], end[1], end[2] + eye), threat_point):
+                return candidate, speed
+    return walkable[0][0], speed
 
 
 def variant_movement(mode, obs, target, goal_kind, base, evasion, dodge, danger, projectile_urgency):

@@ -1,7 +1,7 @@
 import math
 import sys, unittest
 sys.path.insert(0, "bot")
-from combat import combat_action, projectile_dodge, predict_target
+from combat import choose_target, combat_action, projectile_dodge, predict_target
 
 
 class CombatTests(unittest.TestCase):
@@ -20,6 +20,26 @@ class CombatTests(unittest.TestCase):
         }
         self.target = {"id": 2, "kind": "mech", "pos": [0.0, 120.0, 0.0],
                        "vel": [0.0, 0.0, 0.0], "aim": [0.0, 0.0], "hp": 900}
+
+    def test_target_selection_uses_real_max_hp_not_a_fixed_baseline(self):
+        # A cube-buffed enemy's max HP can exceed the base 1400. Scoring its
+        # remaining fraction against a fixed 1400 baseline would rank it as
+        # healthier (50%) than a non-buffed enemy at 43% real HP, when its real
+        # fraction (36%) is actually lower: using the real max HP flips that.
+        me = {"pos": [0.0, 0.0, 0.0]}
+        buffed = {"id": 2, "kind": "mech", "pos": [50.0, 0.0, 0.0],
+                 "aim": [0.0, 0.0], "hp": 700.0, "max_hp": 1960.0}
+        baseline = {"id": 3, "kind": "mech", "pos": [50.0, 0.0, 0.0],
+                   "aim": [0.0, 0.0], "hp": 600.0, "max_hp": 1400.0}
+        self.assertEqual(choose_target({"mechs": [buffed, baseline]}, me)["id"], 2)
+
+    def test_near_death_target_is_preferred_to_deny_the_kill(self):
+        me = {"pos": [0.0, 0.0, 0.0]}
+        near_death = {"id": 2, "kind": "mech", "pos": [50.0, 0.0, 0.0],
+                     "aim": [math.pi, 0.0], "hp": 100.0, "max_hp": 1400.0}
+        full_health_closer = {"id": 3, "kind": "mech", "pos": [40.0, 0.0, 0.0],
+                              "aim": [math.pi, 0.0], "hp": 1400.0, "max_hp": 1400.0}
+        self.assertEqual(choose_target({"mechs": [near_death, full_health_closer]}, me)["id"], 2)
 
     def test_secondary_laser_controls_aim_at_range(self):
         aim, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)

@@ -9,7 +9,8 @@ def _bearing_to(a, b):
 
 
 def choose_target(obs, me, recent_attacker=None, current_target_id=None):
-    """Prefer enemies who are close, aiming at us, charging, or recently damaging us."""
+    """Prefer enemies who are close, aiming at us, charging, recently damaging us,
+    or near death (finishing them denies their HP/energy regen for good)."""
     candidates = []
     mp = me["pos"]
     for e in obs.get("mechs", []):
@@ -19,8 +20,17 @@ def choose_target(obs, me, recent_attacker=None, current_target_id=None):
         if d > 280:
             continue
         kind = 1.0 if e.get("kind") == "mech" else 0.62
-        hp = float(e.get("hp", 900) or 900)
-        low_hp = 1.0 + 0.32 * clamp(1.0 - hp / 1400.0, 0.0, 1.0)
+        # Cube stacking raises max HP, so a fixed baseline under- or over-states
+        # how close a buffed enemy actually is to death; use its real max HP.
+        max_hp = float(e.get("max_hp", 1400) or 1400)
+        hp = float(e.get("hp", 0.64 * max_hp) or 0.64 * max_hp)
+        hp_frac = clamp(hp / max(1.0, max_hp), 0.0, 1.0)
+        low_hp = 1.0 + 0.32 * (1.0 - hp_frac)
+        if hp_frac < 0.15:
+            # One more solid hit likely kills; a target left alive this low fully
+            # heals back within regen_delay + a few seconds of disengagement, so
+            # committing to the kill is usually worth more than switching targets.
+            low_hp *= 2.0
         bearing = _bearing_to(e["pos"], mp)
         enemy_aim = e.get("aim", [0.0, 0.0])
         aim_error = abs(angle_delta(float(enemy_aim[0]), bearing))

@@ -107,6 +107,27 @@ class PolicyTests(unittest.TestCase):
         self.assertGreater(speed, 0)
         self.assertLessEqual(direction[0], 0)
 
+    def test_badly_hurt_vanguard_prefers_a_walkable_direction_that_breaks_cover(self):
+        class CoverWorld(FlatWorld):
+            def blocked(self, start, goal):
+                return False
+
+            def line_of_sight(self, start, goal):
+                return start[0] >= -2  # only the -x side has anything blocking sight
+
+        enemy = {"id": 3, "kind": "mech", "pos": [-50.0, 0.0, 0.0]}
+        # Healthy: takes the first walkable candidate regardless of visibility.
+        direction, _ = vanguard_movement(self.obs, CoverWorld(), enemy, "hold",
+                                         (0, 0), (0, 0), (0, 0), 0, 0)
+        self.assertGreater(direction[0], 0)
+        # Badly hurt: among the walkable candidates, prefers the one that would
+        # also break the engaged target's line of sight.
+        self.obs["self"].update({"hp": 50.0, "max_hp": 200.0})
+        direction, speed = vanguard_movement(self.obs, CoverWorld(), enemy, "hold",
+                                             (0, 0), (0, 0), (0, 0), 0, 0)
+        self.assertGreater(speed, 0)
+        self.assertLess(direction[0], 0)
+
     def test_skirmisher_strafes_a_nearby_opponent(self):
         enemy = {"id": 3, "kind": "mech", "pos": [60.0, 0.0, 0.0]}
         direction, speed = variant_movement("skirmisher", self.obs, enemy, "hold",
