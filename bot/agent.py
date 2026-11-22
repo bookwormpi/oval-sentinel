@@ -8,7 +8,7 @@ from combat import choose_target, combat_action, projectile_dodge
 from strategy import choose_upgrade, choose_take, survival_boost, should_jump, selected_strategy
 from geometry import dist2, unit2, angle_delta, wrap_angle
 from policies import (choose_variant_goal, choose_crate, variant_movement, vanguard_target,
-                      vanguard_movement, tactician_goal, tactician_movement)
+                      vanguard_movement, tactician_goal, tactician_movement, adaptive_zone_guard)
 from adaptive import load_policy, validate_parameters
 
 
@@ -109,7 +109,8 @@ class MechRoyaleBot:
             goal, goal_kind = tactician_goal(obs, self.world, self.last_damage_t, self.policy_parameters)
         else:
             mode = "scavenger" if self.strategy in ("vanguard", "adaptive") else self.strategy
-            goal, goal_kind = choose_variant_goal(obs, self.world, mode, self.policy_parameters)
+            goal, goal_kind = choose_variant_goal(obs, self.world, mode, self.policy_parameters,
+                                                  risk_aware=self.strategy == "adaptive")
         if self.strategy in ("vanguard", "adaptive", "tactician") and goal_kind not in ("zone", "capture"):
             target = vanguard_target(obs, target, self.last_damage_t, self.policy_parameters)
         self.current_target_id = target.get("id") if target else None
@@ -211,12 +212,16 @@ class MechRoyaleBot:
         else:
             self.scan_sound_bearing = None
 
+        boost = survival_boost(obs, goal_distance, urgency)
+        if self.strategy == "adaptive" and not climbing:
+            (mx, my), move_scale = adaptive_zone_guard(obs, self.world, (mx, my), move_scale, boost)
+
         # Keep commanded movement magnitude intentional (the protocol uses it as speed fraction).
         move = [round(mx*move_scale, 4), round(my*move_scale, 4)]
         action = {
             "tick": obs["tick"],
             "move": move,
-            "boost": survival_boost(obs, goal_distance, urgency),
+            "boost": boost,
             "jump": should_jump(obs, max(urgency, projectile_urgency), projectile_urgency),
             "aim": [round(float(aim[0]), 5), round(float(aim[1]), 5)],
             "fire": fire,

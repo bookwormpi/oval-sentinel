@@ -7,7 +7,7 @@ from unittest.mock import patch
 sys.path.insert(0, "bot")
 from agent import MechRoyaleBot
 from policies import (choose_crate, choose_variant_goal, variant_movement, vanguard_movement,
-                      vanguard_target, tactician_goal, tactician_movement)
+                      vanguard_target, tactician_goal, tactician_movement, adaptive_zone_guard)
 from strategy import selected_strategy
 from geometry import angle_delta, slew_angle
 
@@ -150,6 +150,21 @@ class PolicyTests(unittest.TestCase):
         self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [50.0, 0.0, 0.0]}]
         self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
 
+    def test_risk_aware_loot_rejects_a_route_past_an_enemy(self):
+        self.obs["cubes"] = [{"id": 5000, "pos": [90.0, 0.0, 0.0]}]
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [45.0, 35.0, 0.0]}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger", risk_aware=True)[1], "hold")
+        self.obs["mechs"][0]["pos"] = [-60.0, 0.0, 0.0]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger", risk_aware=True)[1], "cube")
+
+    def test_risk_aware_flight_checks_the_approach_not_only_the_landing(self):
+        self.obs["self"].update({"hp": 1400, "max_hp": 1400, "energy": 100})
+        self.obs["cubes"] = [{"id": 5000, "pos": [90.0, 0.0, 20.0]}]
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [45.0, 80.0, 0.0]}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger", risk_aware=True)[1], "hold")
+
     def test_scavenger_flies_to_an_otherwise_unreachable_rooftop_cube(self):
         # 20 m up is far beyond the 4 m walkable-height check, but well within
         # reach of a sustained boost-climb given plenty of energy and no threats.
@@ -268,6 +283,44 @@ class PolicyTests(unittest.TestCase):
                                               (1, 0), (0, 0), (0, 0), 0, 0)
         self.assertEqual(direction, (-1.0, 0.0))
         self.assertGreater(speed, 0)
+
+    def test_adaptive_zone_guard_compensates_for_outward_airborne_momentum(self):
+        self.obs["zone"].update({"radius": 10.0, "next_radius": 10.0})
+        self.obs["self"].update({"pos": [9.0, 0.0, 0.0], "vel": [10.0, 0.0, 0.0],
+                                 "grounded": False, "stats": {"walk_speed": 10.0, "air_accel": 12.0}})
+        direction, speed = adaptive_zone_guard(self.obs, self.world, (0.0, 1.0), 0.9, False)
+        self.assertEqual(direction, (-1.0, 0.0))
+        self.assertEqual(speed, 1.0)
+
+    def test_adaptive_zone_guard_accounts_for_shrinking_boundary(self):
+        self.obs["zone"].update({"radius": 10.0, "next_radius": 0.0,
+                                 "shrink_start": 0.0, "shrink_end": 10.0})
+        self.obs["self"].update({"pos": [9.8, 0.0, 0.0], "vel": [0.0, 0.0, 0.0],
+                                 "grounded": True})
+        direction, speed = adaptive_zone_guard(self.obs, self.world, (0.0, 0.0), 0.0, False)
+        self.assertEqual(direction, (-1.0, 0.0))
+        self.assertEqual(speed, 1.0)
+
+    def test_adaptive_zone_guard_does_not_override_safe_or_outside_motion(self):
+        self.obs["self"].update({"pos": [0.0, 0.0, 0.0], "vel": [0.0, 0.0, 0.0],
+                                 "grounded": True})
+        self.assertEqual(adaptive_zone_guard(self.obs, self.world, (1.0, 0.0), 0.9, False),
+                         ((1.0, 0.0), 0.9))
+        self.obs["self"].update({"pos": [210.0, 0.0, 0.0], "in_zone": False})
+        self.assertEqual(adaptive_zone_guard(self.obs, self.world, (-1.0, 0.0), 1.0, False),
+                         ((-1.0, 0.0), 1.0))
+
+    def test_adaptive_zone_guard_does_not_select_blocked_escape(self):
+        class WallWorld(FlatWorld):
+            def blocked(self, start, end):
+                return end[0] < start[0]
+
+        self.obs["zone"].update({"radius": 10.0, "next_radius": 10.0})
+        self.obs["self"].update({"pos": [9.0, 0.0, 0.0], "vel": [0.0, 0.0, 0.0],
+                                 "grounded": True})
+        direction, speed = adaptive_zone_guard(self.obs, WallWorld(), (1.0, 0.0), 1.0, False)
+        self.assertNotEqual(direction, (-1.0, 0.0))
+        self.assertLessEqual(direction[0] * speed, 0.0)
 
     def test_vanguard_stops_if_all_escape_directions_are_blocked(self):
         class BlockedWorld(FlatWorld):

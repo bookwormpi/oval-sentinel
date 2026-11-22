@@ -81,6 +81,52 @@ approximate simulation suggests a regression, not a validated improvement.
 It does not identify which change caused the difference or predict tournament
 performance. The user subsequently reported a tournament score of 2.54, up
 from the previously reported 2.31; the match sample is unknown.
+
+### Research behind Adaptive's safety changes
+
+These are game-specific adaptations, not implementations of the full
+algorithms or evidence of improved tournament placement:
+
+- The US Marine Corps' [MCDP 1](https://www.marines.mil/Portals/1/Publications/MCDP%201%20Warfighting.pdf)
+  emphasizes acting under uncertainty and adapting as conditions change.
+  Adaptive replans on each observation, although unseen opponents remain a
+  risk. The protocol already supplies temporary tracks for previously seen
+  mechs; these are not extrapolated a second time.
+- [Fox, Burgard and Thrun (1997)](https://www.cs.cmu.edu/~dfox/abstracts/colli-ieee.abstract.html)
+  evaluate locally reachable velocities instead of assuming instantaneous
+  turns. Adaptive projects velocity and acceleration over 0.3 and 0.6 seconds,
+  considering the future circle, and tries bounded alternative commands when
+  its original command would cross the boundary. This is a short heuristic,
+  not the paper's complete dynamic-window algorithm or a safety guarantee.
+- [Ryu and Mehr (2024)](https://arxiv.org/abs/2403.05081) explicitly model
+  uncertain obstacle motion. Adaptive conservatively rejects optional loot
+  and drop routes that pass close to an observed enemy, even if the destination
+  itself is clear. It checks a straight segment against current positions, not
+  predicted probabilities; actual routes, hidden enemies and future movement
+  can differ.
+- [Guibas et al. (1999)](https://www.lavalle.pl/papers/GuiLatLavLinMot99.pdf)
+  show how occlusion creates uncertainty about an opponent's location.
+  Scanning and the protocol's tracking memory help, but silence or an empty
+  observation cannot establish that an area is safe.
+- [Silver and Veness (2010)](https://papers.nips.cc/paper/2010/hash/edfbe1afcf9246bb0d40eb4d8027d90f-Abstract.html)
+  plan over hidden-state beliefs using simulation. Full POMCP is not used in
+  the 50 ms action loop; approximate self-play can compare candidates but is
+  not a substitute for the tournament engine or independent test seeds.
+- [Khatib (1986)](https://khatib.stanford.edu/publications/pdfs/Khatib_1986_IJRR.pdf)
+  notes that local potential-field navigation can become stuck. The existing
+  local obstacle route and the new safety guard remain bounded heuristics, not
+  a complete global route planner.
+- [Sagong (2025)](https://dcollection.korea.ac.kr/srch/srchDetail/000000290646)
+  studies changes in battle-royale behavior by match phase. Its PUBG data are
+  observational and do not establish which policy causes a higher score in
+  Mech Royale; zone deadlines and the value of loot must still be tested here.
+
+In four fresh simulator seeds with two mirrored eight-bot matches per seed,
+Adaptive with these changes and Adaptive from `1efd631` had identical paired
+placement and survival outcomes after swapping slots. This small, approximate
+sample did not demonstrate a match-level improvement or regression; it does
+not establish that the policies are equivalent or predict tournament results.
+
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash

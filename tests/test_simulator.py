@@ -8,6 +8,7 @@ from check import Schema
 from simulator.engine import ROOT, Projectile, Simulator, cylinder_hit, load_config, load_world
 from agent import MechRoyaleBot
 from combat import predict_target
+from policies import adaptive_zone_guard
 
 
 class FlatWorld:
@@ -48,6 +49,28 @@ class SimulatorTests(unittest.TestCase):
         self.assertAlmostEqual(cylinder_hit([-10, 0, 4], [10, 0, 4], [0, 0, 0], 2, 9), 0.4)
         self.assertIsNone(cylinder_hit([-10, 0, 12], [10, 0, 12], [0, 0, 0], 2, 9))
         self.assertIsNone(cylinder_hit([-10, 3, 4], [10, 3, 4], [0, 0, 0], 2, 9))
+
+    def test_zone_guard_reduces_outward_drift_under_simulated_air_acceleration(self):
+        zone = {"center": [0, 0], "radius": 10, "next_center": [0, 0],
+                "next_radius": 10, "shrink_start": 100, "shrink_end": 200}
+
+        def travel(use_guard):
+            sim = Simulator(["baseline", "vanguard"], 42, self.config, FlatWorld(), factory)
+            mech = sim.mechs[0]
+            mech.pos, mech.vel, mech.grounded = [9.0, 0.0, 10.0], [10.0, 0.0, 0.0], False
+            obs = {"t": 0.0, "zone": zone, "self": {
+                "pos": mech.pos, "vel": mech.vel, "grounded": False, "in_zone": True,
+                "stats": sim.mech_stats(mech), "weapons": [],
+            }}
+            direction, fraction = ((0.0, 1.0), 0.9)
+            if use_guard:
+                direction, fraction = adaptive_zone_guard(obs, sim.world, direction, fraction, False)
+            mech.action = {"move": [fraction * direction[0], fraction * direction[1]]}
+            for _ in range(12):
+                sim._move(mech)
+            return mech.pos[0]
+
+        self.assertLess(travel(True), travel(False))
 
     def test_observation_conforms_to_schema(self):
         obs = self.sim.observation(self.sim.mechs[0])

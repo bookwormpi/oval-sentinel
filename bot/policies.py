@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from adaptive import DEFAULT_PARAMETERS
-from geometry import angle_delta, dist2, unit2
+from geometry import angle_delta, dist2, point_segment_distance, unit2
 from navigation import zone_state
 from strategy import WEAPON_VALUE, SWAP_MARGIN, effective_walk_speed
 
@@ -54,7 +54,7 @@ def _zone_goal(obs, world, lead_seconds=12.0):
     return None
 
 
-def choose_variant_goal(obs, world, mode, parameters=None):
+def choose_variant_goal(obs, world, mode, parameters=None, risk_aware=False):
     """Choose objectives without requiring information outside the observation."""
     params = parameters if parameters is not None else DEFAULT_PARAMETERS
     zone_goal = _zone_goal(obs, world, params["zone_lead_seconds"])
@@ -66,6 +66,11 @@ def choose_variant_goal(obs, world, mode, parameters=None):
     center, radius = zone_state(obs["zone"], obs["t"])
     enemies = [e for e in obs.get("mechs", [])
                if e.get("kind") == "mech" and e.get("id") != me["id"]]
+
+    def clear_of_enemies(point, threat_radius):
+        return all(dist2(point, enemy["pos"]) >= threat_radius and
+                   (not risk_aware or point_segment_distance(enemy["pos"], pos, point) >= threat_radius)
+                   for enemy in enemies)
 
     def zone_detour_safe(point, action_seconds=0.0):
         zone = obs["zone"]
@@ -87,7 +92,7 @@ def choose_variant_goal(obs, world, mode, parameters=None):
             return False
         if not zone_detour_safe(point, action_seconds):
             return False
-        return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
+        return clear_of_enemies(point, threat_radius)
 
     climb = _climb_budget(me)
     hp_frac = float(me.get("hp", 1.0)) / max(1.0, float(me.get("max_hp", 1.0)))
@@ -104,7 +109,7 @@ def choose_variant_goal(obs, world, mode, parameters=None):
         rise_speed = max(1.0, float(me.get("stats", {}).get("max_rise_speed", 10.0)))
         if not zone_detour_safe(point, height / rise_speed):
             return False
-        return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
+        return clear_of_enemies(point, threat_radius)
 
     # A full repair and three cubes can justify a detour, including early in a match.
     for drop in sorted(obs.get("drops", []), key=lambda item: (
@@ -273,6 +278,64 @@ def vanguard_movement(obs, world, target, goal_kind, base, evasion, dodge,
             if not world.line_of_sight((end[0], end[1], end[2] + eye), threat_point):
                 return candidate, speed
     return walkable[0][0], speed
+
+
+def _projected_step(me, direction, speed_fraction, boost, seconds):
+    stats = me.get("stats", {})
+    grounded = me.get("grounded", True)
+    speed = float(stats.get("boost_speed", 19.5) if boost and grounded
+                  else stats.get("walk_speed", 11.7))
+    if any(w and w.get("kind") == "laser" and float(w.get("charge", 0)) > 0
+           for w in me.get("weapons", [])):
+        speed *= float(stats.get("charge_move_mult", 0.5))
+    accel = float(stats.get("ground_accel", 58.5) if grounded else stats.get("air_accel", 12.0))
+    vx, vy = me.get("vel", [0.0, 0.0, 0.0])[:2]
+    tx, ty = direction[0] * speed * speed_fraction, direction[1] * speed * speed_fraction
+    dx, dy = tx - vx, ty - vy
+    change = math.hypot(dx, dy)
+    if change <= 1e-9 or accel <= 0:
+        return (me["pos"][0] + vx * seconds, me["pos"][1] + vy * seconds, me["pos"][2])
+    duration = min(seconds, change / accel)
+    ax, ay = accel * dx / change, accel * dy / change
+    return (me["pos"][0] + vx * duration + 0.5 * ax * duration * duration + tx * (seconds - duration),
+            me["pos"][1] + vy * duration + 0.5 * ay * duration * duration + ty * (seconds - duration),
+            me["pos"][2])
+
+
+def adaptive_zone_guard(obs, world, direction, speed_fraction, boost):
+    """Keep short-horizon predicted motion inside the shrinking zone when feasible."""
+    me = obs["self"]
+    if not me["in_zone"]:
+        return direction, speed_fraction
+    position = me["pos"]
+    horizon = (0.3, 0.6)
+
+    def prediction(candidate, fraction):
+        points = [_projected_step(me, candidate, fraction, boost, seconds) for seconds in horizon]
+        violation = max(
+            dist2(point, center) - radius
+            for point, (center, radius) in zip(
+                points, (zone_state(obs["zone"], float(obs["t"]) + seconds) for seconds in horizon)))
+        return max(0.0, violation), points
+
+    original, _ = prediction(direction, speed_fraction)
+    if original <= 1e-6:
+        return direction, speed_fraction
+    center, _ = zone_state(obs["zone"], float(obs["t"]) + horizon[-1])
+    inward = unit2(center[0] - position[0], center[1] - position[1])
+    candidates = [(inward, 1.0), ((-inward[1], inward[0]), 1.0),
+                  ((inward[1], -inward[0]), 1.0), ((0.0, 0.0), 0.0)]
+    best = (original, 0.0, direction, speed_fraction)
+    for candidate, fraction in candidates:
+        violation, points = prediction(candidate, fraction)
+        if violation > best[0]:
+            continue
+        if any(world.blocked(a, b) for a, b in zip([tuple(position)] + points, points)):
+            continue
+        deviation = 1.0 - (candidate[0] * direction[0] + candidate[1] * direction[1])
+        if (violation, deviation) < best[:2]:
+            best = (violation, deviation, candidate, fraction)
+    return best[2], best[3]
 
 
 def tactician_movement(obs, world, target, goal_kind, base, evasion, dodge,
