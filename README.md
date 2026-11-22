@@ -32,8 +32,8 @@ Docker build argument alone will not select a strategy for a submission.
 | `survivor` | Hold position when safe, avoid threats, recover to the nearest safe zone point, and take nearby safe supply drops. |
 | `scavenger` | Survivor-style movement plus pursuit of nearby safe cubes, weapons and drops; shoots nearby crates when there is no tracked target or recent damage. |
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
-| `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization, short-range obstacle-aware evasion, grounded upgrade valuation, finishing-blow target priority, and cover-seeking retreat (see below). The default for the next submission. |
-| `adaptive` | Opt-in Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
+| `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization, short-range obstacle-aware evasion, upgrade valuation, finishing-blow target priority, and cover-seeking retreat (see below). |
+| `adaptive` | Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
 | `neural` | Experimental neural movement and aim, with automatic Vanguard-derived actions. Requires `bot/neural_policy.json`. |
 
 The alternatives also correct a mortar-aiming defect that is deliberately
@@ -51,6 +51,12 @@ Loot and supply-drop detours outside the next safe circle must leave enough
 estimated walking time to return before the shrink ends, including the zone
 lead buffer and remaining capture or climb time. This is a straight-line
 estimate, not a guarantee of navigating around obstacles before the deadline.
+If Vanguard's local movement options are blocked or point outside the current
+circle, it tries moving inward instead of continuing along the rejected path.
+A simulator comparison of the detour change alone used eight seeds and two
+mirrored eight-bot matches per seed: mean normalized placement difference
+was +0.009 with seed-level standard error 0.015. This does not establish a
+performance improvement; the later inward-movement fallback was not included.
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash
@@ -270,8 +276,8 @@ The match runtime is 1 CPU, 512 MB RAM, no network, read-only filesystem except 
 
 ## Important limitations
 
-- Reported practice scores: scavenger 1.88, skirmisher 1.21, survivor 1.19.
-  Vanguard has not been evaluated in scored matches.
+- Reported scores: scavenger 1.88, skirmisher 1.21, survivor 1.19, and
+  Vanguard 2.31. Match conditions may differ.
 - The conformance checker verifies protocol correctness and decision latency only; it does not simulate responsive opponents.
 - Navigation is a local waypoint planner, not globally optimal A*; collision and visibility calculations remain approximations.
 - Mortar aiming is approximate and should be tuned from actual match replays;

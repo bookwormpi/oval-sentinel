@@ -190,6 +190,24 @@ class PolicyTests(unittest.TestCase):
         self.assertGreater(speed, 0)
         self.assertLessEqual(direction[0], 0)
 
+    def test_vanguard_moves_inward_when_every_escape_points_outside_small_zone(self):
+        self.obs["zone"]["radius"] = 10.0
+        self.obs["zone"]["next_radius"] = 0.0
+        self.obs["self"]["pos"] = [9.0, 0.0, 0.0]
+        direction, speed = vanguard_movement(self.obs, self.world, None, "cube",
+                                              (1, 0), (0, 0), (0, 0), 0, 0)
+        self.assertEqual(direction, (-1.0, 0.0))
+        self.assertGreater(speed, 0)
+
+    def test_vanguard_stops_if_all_escape_directions_are_blocked(self):
+        class BlockedWorld(FlatWorld):
+            def blocked(self, start, goal):
+                return True
+
+        direction, speed = vanguard_movement(self.obs, BlockedWorld(), None, "cube",
+                                              (1, 0), (0, 0), (0, 0), 0, 0)
+        self.assertEqual((direction, speed), ((0.0, 0.0), 0.0))
+
     def test_badly_hurt_vanguard_prefers_a_walkable_direction_that_breaks_cover(self):
         class CoverWorld(FlatWorld):
             def blocked(self, start, goal):

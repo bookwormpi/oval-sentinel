@@ -237,7 +237,12 @@ def vanguard_movement(obs, world, target, goal_kind, base, evasion, dodge,
         if not world.blocked(start, end):
             walkable.append((candidate, end))
     if not walkable:
-        return direction, speed
+        inward = unit2(center[0] - start[0], center[1] - start[1])
+        step = min(6.0, dist2(start, center))
+        end = (start[0] + inward[0] * step, start[1] + inward[1] * step, start[2])
+        if inward != (0.0, 0.0) and not world.blocked(start, end):
+            return inward, speed
+        return (0.0, 0.0), 0.0
     # Nothing previously ever sought cover: a losing fight just walked (or circled)
     # in the open. When clearly losing, prefer a walkable option that would also
     # break the engaged target's line of sight, over the first one found.
