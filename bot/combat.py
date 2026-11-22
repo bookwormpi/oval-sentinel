@@ -86,7 +86,7 @@ def predict_target(me, target, weapon, config, correct_mortar=False):
     return math.atan2(r[1], r[0]), math.atan2(r[2], max(1e-6, math.hypot(r[0], r[1]))), dist3(origin, aimpoint), r
 
 
-def _weapon_aim_priority(w, distance):
+def _weapon_aim_priority(w, distance, precision=False):
     kind = w["kind"]
     stats = w.get("stats", {})
     if kind == "lightning":
@@ -95,6 +95,8 @@ def _weapon_aim_priority(w, distance):
         charge = float(w.get("charge", 0))
         if charge > 0.01:
             return 240
+        if precision and float(w.get("cooldown", 0)) > 0:
+            return -1
         return 125 if distance >= 65 and distance <= float(stats.get("range", 280)) * 0.98 else 75
     if kind == "gun":
         if int(w.get("ammo", 1)) <= 0 or float(w.get("reload", 0)) > 0:
@@ -107,7 +109,7 @@ def _weapon_aim_priority(w, distance):
     return -1
 
 
-def combat_action(obs, me, target, config, world=None, correct_mortar=False):
+def combat_action(obs, me, target, config, world=None, correct_mortar=False, precision=False):
     """Choose the best weapon's aim; independently gate each trigger on actual alignment."""
     actual = me.get("aim", [0.0, 0.0])
     aim = [float(actual[0]), float(actual[1])]
@@ -128,7 +130,7 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False):
             yaw, pitch, distance, rel = predict_target(me, target, w, config, correct_mortar)
             pitch = clamp(pitch, float(config["mech"].get("min_pitch", -0.7)), float(config["mech"].get("max_pitch", 1.3)))
             solutions[slot] = (yaw, pitch, distance, rel)
-            priority = _weapon_aim_priority(w, distance)
+            priority = _weapon_aim_priority(w, distance, precision)
             if priority >= 0:
                 candidates.append((priority, slot, yaw, pitch))
         if candidates:
@@ -152,7 +154,28 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False):
                 float(config["mech"].get("max_pitch", 1.3)))
             yaw_err = abs(angle_delta(yaw, projected_yaw))
             pitch_err = abs(pitch - projected_pitch)
-            aligned = yaw_err < 0.075 and pitch_err < 0.075
+            if precision:
+                # Actions are held for two simulation ticks; use the observed
+                # torso and the actual command, not this weapon's hypothetical aim.
+                yaw_err = max(abs(angle_delta(yaw, float(actual[0]))),
+                              abs(angle_delta(yaw, aim[0])))
+                pitch_err = max(abs(pitch - float(actual[1])), abs(pitch - aim[1]))
+            yaw_limit = pitch_limit = 0.075
+            if precision and w["kind"] in ("gun", "laser"):
+                target_kind = target.get("kind")
+                if target_kind == "mech":
+                    size = 1.0 + 0.05 * float(target.get("cubes", 0))
+                    radius, height = 2.5 * size, 9.0 * size
+                elif target_kind == "npc":
+                    radius = float(config.get("npc", {}).get("radius", 1.8))
+                    height = float(config.get("npc", {}).get("height", 3.5))
+                else:
+                    radius = float(config.get("crates", {}).get("radius", 1.4))
+                    height = float(config.get("crates", {}).get("height", 2.4))
+                horizontal = math.hypot(target_pos[0] - origin[0], target_pos[1] - origin[1])
+                yaw_limit = min(yaw_limit, math.atan2(radius, max(1.0, horizontal)))
+                pitch_limit = min(pitch_limit, math.atan2(height * 0.5, max(1.0, horizontal)))
+            aligned = yaw_err < yaw_limit and pitch_err < pitch_limit
             yaw_aligned = yaw_err < math.radians(float(stats.get("cone_deg", 30)) * 0.5)
             cooldown = float(w.get("cooldown", 0))
             kind = w["kind"]
@@ -168,7 +191,7 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False):
                 in_range = distance < float(stats.get("range", 280)) * 0.985
                 # Holding charges; releasing at full charge fires along the actual aim.
                 if charge >= max_charge - 0.015:
-                    fire[slot] = False
+                    fire[slot] = bool(precision and in_range and direct_weapon_has_los and not aligned)
                 else:
                     # Once charging starts, keep holding while tracking the target;
                     # requiring perfect alignment every frame causes premature release.
@@ -197,7 +220,7 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False):
     return aim, fire, reload_now, target
 
 
-def projectile_dodge(obs, me):
+def projectile_dodge(obs, me, correct_side=False):
     """Predict 3-D projectile proximity and return a lateral escape vector + urgency."""
     p = me["pos"]
     mv = me.get("vel", [0, 0, 0])
@@ -233,6 +256,8 @@ def projectile_dodge(obs, me):
             strength = (radius - horizontal) / radius * (1.0 - t / 0.85)
             # Move perpendicular to the projectile's horizontal path, away from its approach side.
             side = 1.0 if (rx * vy - ry * vx) >= 0 else -1.0
+            if correct_side:
+                side = -side
             n = math.hypot(vx, vy) or 1.0
             candidate = (-vy / n * side, vx / n * side)
             if strength > best:

@@ -121,6 +121,57 @@ def choose_crate(obs, last_damage_t):
     return {"id": crate["id"], "kind": "crate", "pos": crate["pos"], "vel": [0, 0, 0]}
 
 
+def vanguard_target(obs, current_target, last_damage_t):
+    """Avoid chasing distant drones; farm a nearby crate when no mech threatens."""
+    me = obs["self"]
+    if current_target:
+        distance = dist2(me["pos"], current_target["pos"])
+        if current_target.get("kind") == "mech" or distance < 70:
+            return current_target
+    if me.get("cubes", 0) < 10 and me.get("hp", 1) >= 0.8 * me.get("max_hp", 1):
+        crate = choose_crate(obs, last_damage_t)
+        if crate is not None:
+            return crate
+    return None
+
+
+def vanguard_movement(obs, world, target, goal_kind, base, evasion, dodge,
+                      danger, projectile_urgency):
+    direction, speed = variant_movement(
+        "scavenger", obs, target, goal_kind, base, evasion, dodge, danger, projectile_urgency)
+    if not obs["self"]["in_zone"] or goal_kind in ("zone", "capture"):
+        return direction, speed
+    me = obs["self"]
+    if target and target.get("kind") == "mech":
+        dx = me["pos"][0] - target["pos"][0]
+        dy = me["pos"][1] - target["pos"][1]
+        distance = math.hypot(dx, dy)
+        if 1 < distance < 110:
+            away = (dx / distance, dy / distance)
+            side = 1 if int(obs["t"] / 2.0) % 2 == int(me["id"]) % 2 else -1
+            radial = 1.0 if distance < 65 else 0.4
+            direction = unit2(
+                radial * away[0] - side * away[1] + base[0] * 0.4
+                + dodge[0] * projectile_urgency * 2,
+                radial * away[1] + side * away[0] + base[1] * 0.4
+                + dodge[1] * projectile_urgency * 2,
+            )
+            speed = 0.9
+    if speed <= 0 or direction == (0.0, 0.0):
+        return direction, speed
+
+    center, radius = zone_state(obs["zone"], obs["t"])
+    start = tuple(me["pos"])
+    candidates = (direction, (-direction[1], direction[0]), (direction[1], -direction[0]))
+    for candidate in candidates:
+        end = (start[0] + candidate[0] * 6, start[1] + candidate[1] * 6, start[2])
+        if dist2(end, center) > radius and dist2(end, center) > dist2(start, center):
+            continue
+        if not world.blocked(start, end):
+            return candidate, speed
+    return direction, speed
+
+
 def variant_movement(mode, obs, target, goal_kind, base, evasion, dodge, danger, projectile_urgency):
     """Return a direction and speed fraction for an alternative policy."""
     me = obs["self"]

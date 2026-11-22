@@ -4,8 +4,8 @@ from collections import Counter
 import os
 
 # Change this value and submit the resulting commit to test a different policy.
-SELECTED_STRATEGY = "survivor"
-STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher")
+SELECTED_STRATEGY = "vanguard"
+STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher", "vanguard")
 
 
 def selected_strategy():

@@ -7,7 +7,7 @@ from navigation import choose_goal, steer
 from combat import choose_target, combat_action, projectile_dodge
 from strategy import choose_upgrade, choose_take, survival_boost, should_jump, selected_strategy
 from geometry import dist2, unit2, angle_delta
-from policies import choose_variant_goal, choose_crate, variant_movement
+from policies import choose_variant_goal, choose_crate, variant_movement, vanguard_target, vanguard_movement
 
 
 class MechRoyaleBot:
@@ -91,11 +91,14 @@ class MechRoyaleBot:
 
         recent_attacker = self.last_attacker if now-self.last_damage_t < 2.5 else None
         target = choose_target(obs, me, recent_attacker, self.current_target_id)
-        self.current_target_id = target.get("id") if target else None
         if self.strategy == "baseline":
             goal, goal_kind = choose_goal(obs, self.world)
         else:
-            goal, goal_kind = choose_variant_goal(obs, self.world, self.strategy)
+            mode = "scavenger" if self.strategy == "vanguard" else self.strategy
+            goal, goal_kind = choose_variant_goal(obs, self.world, mode)
+        if self.strategy == "vanguard" and goal_kind not in ("zone", "capture"):
+            target = vanguard_target(obs, target, self.last_damage_t)
+        self.current_target_id = target.get("id") if target else None
         if self.strategy != "baseline" and goal_kind in ("hold", "capture"):
             base_direction = (0.0, 0.0)
         else:
@@ -105,11 +108,15 @@ class MechRoyaleBot:
         evasion, danger, nearby = self._threat_vector(obs, me)
         if nearby >= 2:
             danger = max(danger, 0.60)
-        dodge, projectile_urgency = projectile_dodge(obs, me)
+        dodge, projectile_urgency = projectile_dodge(obs, me, correct_side=self.strategy == "vanguard")
         urgency = max(danger, projectile_urgency)
 
         # Zone recovery outranks combat evasion; otherwise break away from focused attackers.
-        if self.strategy != "baseline":
+        if self.strategy == "vanguard":
+            (mx, my), move_scale = vanguard_movement(
+                obs, self.world, target, goal_kind, base_direction,
+                evasion, dodge, danger, projectile_urgency)
+        elif self.strategy != "baseline":
             (mx, my), move_scale = variant_movement(
                 self.strategy, obs, target, goal_kind, base_direction,
                 evasion, dodge, danger, projectile_urgency)
@@ -135,7 +142,8 @@ class MechRoyaleBot:
                 and goal_kind == "hold" and me.get("cubes", 0) < 10):
             target = choose_crate(obs, self.last_damage_t)
         aim, fire, reload_now, target_info = combat_action(
-            obs, me, target, self.config, self.world, correct_mortar=self.strategy != "baseline")
+            obs, me, target, self.config, self.world,
+            correct_mortar=self.strategy != "baseline", precision=self.strategy == "vanguard")
         for event in obs.get("events", []):
             if event.get("type") == "damaged" and event.get("bearing") is not None:
                 if event.get("rear") or target is None:

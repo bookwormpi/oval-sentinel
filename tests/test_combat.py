@@ -53,6 +53,49 @@ class CombatTests(unittest.TestCase):
         _, urgency = projectile_dodge(obs, self.me)
         self.assertEqual(urgency, 0.0)
 
+    def test_corrected_dodge_moves_away_from_projectile_path(self):
+        for shot_x in (-1.0, 1.0):
+            with self.subTest(shot_x=shot_x):
+                obs = {"projectiles": [{"kind": "gun", "pos": [shot_x, -10, 4], "vel": [0, 20, 0]}]}
+                direction, urgency = projectile_dodge(obs, self.me, correct_side=True)
+                self.assertGreater(urgency, 0)
+                self.assertLess(direction[0] * shot_x, 0)
+
+    def test_precision_does_not_fire_before_actual_torso_alignment(self):
+        self.me["weapons"][1] = None
+        self.target["pos"] = [100.0, 10.0, 0.0]
+        _, legacy_fire, _, _ = combat_action({}, self.me, self.target, self.config)
+        _, precision_fire, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertTrue(legacy_fire[0])
+        self.assertFalse(precision_fire[0])
+
+    def test_precision_uses_target_size_at_range(self):
+        self.me["weapons"][1] = None
+        self.me["aim"] = [0.05, 0.0]
+        self.target["pos"] = [100.0, 0.0, 0.0]
+        _, legacy_fire, _, _ = combat_action({}, self.me, self.target, self.config)
+        _, precision_fire, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertTrue(legacy_fire[0])
+        self.assertFalse(precision_fire[0])
+        self.me["aim"] = [0.0, math.atan2(-2.5, 100)]
+        _, precision_fire, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertTrue(precision_fire[0])
+
+    def test_precision_holds_full_laser_until_aligned(self):
+        self.me["weapons"][1]["charge"] = 0.75
+        _, fire, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertTrue(fire[1])
+        self.me["aim"] = [math.pi / 2, math.atan2(-2.5, 120)]
+        _, fire, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertFalse(fire[1])
+
+    def test_precision_does_not_aim_unavailable_laser_over_gun(self):
+        self.me["weapons"][1]["cooldown"] = 1.0
+        self.target["pos"] = [100.0, 0.0, 0.0]
+        self.target["vel"] = [0.0, 20.0, 0.0]
+        aim, _, _, _ = combat_action({}, self.me, self.target, self.config, precision=True)
+        self.assertGreater(aim[0], 0.05)
+
     def test_shooter_velocity_is_used_for_gun_interception(self):
         self.me["vel"] = [100.0, 0.0, 0.0]
         self.target["pos"] = [0.0, 100.0, 0.0]

@@ -28,12 +28,13 @@ Docker build argument alone will not select a strategy for a submission.
 
 | Strategy | Behavior |
 | --- | --- |
-| `baseline` | Existing Oval Sentinel II controller (default control). |
+| `baseline` | Existing Oval Sentinel II controller. |
 | `survivor` | Hold position when safe, avoid threats, recover to the nearest safe zone point, and take nearby safe supply drops. |
 | `scavenger` | Survivor-style movement plus pursuit of nearby safe cubes, weapons and drops; shoots nearby crates when there is no tracked target or recent damage. |
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
+| `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization and short-range obstacle-aware evasion. The default for the next submission. |
 
-The three alternatives also correct a mortar-aiming defect that is deliberately
+The alternatives also correct a mortar-aiming defect that is deliberately
 retained in `baseline`, so comparisons with the baseline include this combat
 change as well as strategic changes. These are experimental heuristics, not
 measured improvements. Practice matches
@@ -80,12 +81,12 @@ docker build -t oval-sentinel-ii .
 python3 check.py --schema mechfight.schema.json --stream stream.jsonl.gz --map-dir /arena -- docker run --rm -i --network none --cpus 1 --memory 512m --read-only --tmpfs /tmp:rw,size=64m --user 65534:65534 -v "$PWD/arena:/arena:ro" oval-sentinel-ii
 ```
 
-The match runtime is 1 CPU, 512 MB RAM, no network, read-only filesystem except `/tmp`, and uid 65534. Docker was not installed in the environment used to prepare this revision, so the image build/runtime command has not been verified here.
+The match runtime is 1 CPU, 512 MB RAM, no network, read-only filesystem except `/tmp`, and uid 65534.
 
 ## Important limitations
 
-- The user reported a 1.71 practice score for the current version. The new
-  strategy variants have not been evaluated in scored matches.
+- Reported practice scores: scavenger 1.88, skirmisher 1.21, survivor 1.19.
+  Vanguard has not been evaluated in scored matches.
 - The conformance checker verifies protocol correctness and decision latency only; it does not simulate responsive opponents.
 - Navigation is a local waypoint planner, not globally optimal A*; collision and visibility calculations remain approximations.
 - Mortar aiming is approximate and should be tuned from actual match replays;

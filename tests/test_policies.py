@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, "bot")
 from agent import MechRoyaleBot
-from policies import choose_crate, choose_variant_goal, variant_movement
+from policies import choose_crate, choose_variant_goal, variant_movement, vanguard_movement, vanguard_target
 from strategy import selected_strategy
 
 
@@ -23,6 +23,9 @@ class FlatWorld:
 
     def line_of_sight(self, start, goal):
         return True
+
+    def blocked(self, start, goal):
+        return False
 
 
 class PolicyTests(unittest.TestCase):
@@ -86,6 +89,24 @@ class PolicyTests(unittest.TestCase):
         self.obs["mechs"] = []
         self.assertIsNone(choose_crate(self.obs, -1))
 
+    def test_vanguard_prioritizes_near_crate_over_distant_drone(self):
+        self.obs["crates"] = [{"id": 1000, "pos": [30.0, 0.0, 0.0]}]
+        drone = {"id": 100, "kind": "npc", "pos": [0.0, 90.0, 0.0]}
+        self.assertEqual(vanguard_target(self.obs, drone, -100)["id"], 1000)
+        self.obs["self"].update({"hp": 70, "max_hp": 100})
+        self.assertIsNone(vanguard_target(self.obs, drone, -100))
+
+    def test_vanguard_steers_around_blocked_direction(self):
+        class WallWorld(FlatWorld):
+            def blocked(self, start, goal):
+                return goal[0] > start[0] + 1
+
+        enemy = {"id": 3, "kind": "mech", "pos": [-50.0, 0.0, 0.0]}
+        direction, speed = vanguard_movement(self.obs, WallWorld(), enemy, "hold",
+                                              (0, 0), (0, 0), (0, 0), 0, 0)
+        self.assertGreater(speed, 0)
+        self.assertLessEqual(direction[0], 0)
+
     def test_skirmisher_strafes_a_nearby_opponent(self):
         enemy = {"id": 3, "kind": "mech", "pos": [60.0, 0.0, 0.0]}
         direction, speed = variant_movement("skirmisher", self.obs, enemy, "hold",
@@ -113,6 +134,20 @@ class PolicyTests(unittest.TestCase):
         self.obs["crates"] = [{"id": 1000, "pos": [30.0, 0.0, 0.0]}]
         hello = {"config": {"mech": {"min_pitch": -0.7, "max_pitch": 1.3}}}
         with patch.dict(os.environ, {"OVAL_STRATEGY": "scavenger"}), patch("agent.World", FlatWorld):
+            action = MechRoyaleBot(hello).act(self.obs)
+        self.assertTrue(action["fire"][0])
+
+    def test_vanguard_fires_on_aligned_safe_crate_through_agent(self):
+        self.obs.update({"tick": 2, "sounds": [], "events": [], "projectiles": []})
+        self.obs["self"].update({
+            "vel": [0.0, 0.0, 0.0], "aim": [0.0, -0.173245],
+            "hp": 1400, "max_hp": 1400, "energy": 100, "grounded": True,
+            "weapons": [{"kind": "gun", "ammo": 12, "cooldown": 0, "reload": 0,
+                         "stats": {"speed": 252, "range": 230}}, None],
+        })
+        self.obs["crates"] = [{"id": 1000, "pos": [30.0, 0.0, 0.0]}]
+        hello = {"config": {"mech": {"min_pitch": -0.7, "max_pitch": 1.3}}}
+        with patch.dict(os.environ, {"OVAL_STRATEGY": "vanguard"}), patch("agent.World", FlatWorld):
             action = MechRoyaleBot(hello).act(self.obs)
         self.assertTrue(action["fire"][0])
 
