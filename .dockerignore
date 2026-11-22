@@ -1,0 +1,13 @@
+.git
+__pycache__
+*.pyc
+# Dev/training-only: bot/ is standard-library-only and self-contained (see README),
+# and check.py/stream.jsonl* run on the host against the container, not inside it.
+simulator
+tests
+check.py
+protocol.md
+mechfight.schema.json
+CHANGELOG-v2.md
+stream.jsonl
+stream.jsonl.gz

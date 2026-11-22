@@ -22,6 +22,7 @@ class MechRoyaleBot:
         self.last_damage_t = -999.0
         self.tick_count = 0
         self.current_target_id = None
+        self.current_combat_target = None
         self.strategy = selected_strategy(strategy)
         if policy_parameters is not None and self.strategy != "adaptive":
             raise ValueError("Policy parameters are only supported by the adaptive strategy")
@@ -146,6 +147,7 @@ class MechRoyaleBot:
         if (self.strategy == "scavenger" and target is None
                 and goal_kind == "hold" and me.get("cubes", 0) < 10):
             target = choose_crate(obs, self.last_damage_t)
+        self.current_combat_target = target
         aim, fire, reload_now, target_info = combat_action(
             obs, me, target, self.config, self.world,
             correct_mortar=self.strategy != "baseline", precision=self.strategy in ("vanguard", "adaptive"))

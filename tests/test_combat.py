@@ -33,6 +33,20 @@ class CombatTests(unittest.TestCase):
         aim, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)
         self.assertTrue(fire[1])
 
+    def test_commanded_aim_holds_charge_only_while_in_range_and_visible(self):
+        self.me["weapons"][1]["charge"] = 0.3
+        # commanded_aim disagrees with the solved aim (yaw ~pi/2): a diverging neural
+        # command should keep holding the charge while the shot is still viable...
+        _, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config,
+                                      commanded_aim=[0.0, 0.0])
+        self.assertTrue(fire[1])
+        # ...but not force a hold (and the eventual wasted hold_s release) once the
+        # target is out of the laser's range.
+        self.target["pos"] = [0.0, 10000.0, 0.0]
+        _, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config,
+                                      commanded_aim=[0.0, 0.0])
+        self.assertFalse(fire[1])
+
     def test_full_laser_charge_releases(self):
         self.me["weapons"][1]["charge"] = 0.75
         _, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)

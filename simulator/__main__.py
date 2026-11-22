@@ -7,6 +7,7 @@ from .engine import ROOT, Simulator, load_config, load_world
 from adaptive import load_policy
 from agent import MechRoyaleBot
 from strategy import STRATEGIES
+from neural import NeuralBot, load_model
 
 
 def main():
@@ -20,6 +21,7 @@ def main():
     parser.add_argument("--map-dir", default=str(ROOT / "arena"))
     parser.add_argument("--config-stream", default=str(ROOT / "stream.jsonl.gz"))
     parser.add_argument("--policy", help="policy JSON for adaptive bots (default: bot/adaptive_policy.json)")
+    parser.add_argument("--model", help="model JSON for neural bots (default: bot/neural_policy.json)")
     args = parser.parse_args()
     config = load_config(args.config_stream)
     slots = args.slots if args.slots is not None else len(args.strategies)
@@ -31,11 +33,16 @@ def main():
         parser.error("--seconds must be finite and positive")
     if args.policy and "adaptive" not in args.strategies:
         parser.error("--policy requires the adaptive strategy")
+    if args.model and "neural" not in args.strategies:
+        parser.error("--model requires the neural strategy")
 
     world = load_world(args.map_dir)
     parameters = load_policy(args.policy) if args.policy else None
+    model = load_model(args.model) if args.model else load_model() if "neural" in args.strategies else None
 
     def factory(hello, strategy, shared_world):
+        if strategy == "neural":
+            return NeuralBot(hello, world=shared_world, model=model)
         return MechRoyaleBot(hello, strategy=strategy, world=shared_world,
                              policy_parameters=parameters if strategy == "adaptive" else None)
 

@@ -34,6 +34,7 @@ Docker build argument alone will not select a strategy for a submission.
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
 | `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization and short-range obstacle-aware evasion. The default for the next submission. |
 | `adaptive` | Opt-in Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
+| `neural` | Experimental neural movement and aim, with automatic Vanguard-derived actions. Requires `bot/neural_policy.json`. |
 
 The alternatives also correct a mortar-aiming defect that is deliberately
 retained in `baseline`, so comparisons with the baseline include this combat
@@ -61,6 +62,7 @@ four per hour. The recorded stream checks conformance, not placement.
 - `bot/combat.py`: threat-weighted targeting, gun/laser/lightning/mortar aiming, firing gates, and 3-D projectile dodge.
 - `bot/strategy.py`: stack-aware upgrade valuation, weapon pickup, and conservative boost/jump policy.
 - `bot/geometry.py`: numerical primitives.
+- `bot/neural.py`: experimental observation encoder and neural controller.
 
 ## Local validation
 
@@ -94,7 +96,10 @@ containing a hello/config message. Output is one JSON object per match followed
 by a summary. Local placement points are `number of bots - place`; equal-tick
 eliminations share a place, and timeout survivors are ranked by remaining HP.
 These are not official scores. Truncated matches are excluded from the summary,
-and their surviving bots have null placement and score.
+and their surviving bots have null placement, score and `survival_seconds`.
+`observed_survival_seconds` gives the time observed, and `survival_censored`
+identifies survivors whose match was truncated. Winners' survival is measured
+until the match ends; timeout survivors are measured until the timeout.
 
 **This is not the tournament engine or a training algorithm.** The simulator
 approximates movement and aiming, all four weapons and their signature effects,
@@ -148,6 +153,66 @@ conformance check and commit both files. Other strategies remain unchanged.
 The included first candidate was trained on seeds 42 and 43 and validated on
 1000042 and 1000043 with eight bots. Its mean paired validation difference was
 approximately zero; this small experiment does not show an improvement.
+
+## Experimental neural self-play
+
+The opt-in neural controller uses a 16-unit hidden-layer network to choose
+facing-relative forward/left movement and yaw/pitch offsets. Movement is
+rotated by the **observed** torso yaw into the protocol's world frame; the
+engine, not the network, slews the torso toward the commanded aim. Vanguard
+still chooses firing, reload, boost, jump, pickups and upgrades. Firing uses
+Vanguard's target and firing gates with the neural aim; a laser
+already charging is held instead of deliberately released off-target, although
+the game can force a release after its maximum hold time.
+
+The encoder includes normalized scalar summaries of self state, all observation
+fields, hello fields other than the map descriptor, and nearby distances. Variable-length data is
+compressed into fixed-size signed hash buckets: this is **lossy**, collisions
+and array ordering matter, and individual inputs cannot always be recovered.
+For each visible entity category and each static map category (prisms, trees,
+cars, barriers), it includes the four nearest distances, a nearby count, and
+hashes the distances of all objects within `--object-radius` (meters; default
+200). Map-object distances are approximate distances to 3-D bounding boxes,
+not exact surfaces; terrain height samples and the full map are not network
+inputs. The automatic Vanguard controller still uses map geometry. Observation
+fields, including positions of reported objects outside the distance radius,
+are also encoded; the radius limits the **derived distance features**, not the
+protocol observations.
+
+Individuals compete in groups, earn mean survival seconds from completed
+matches, and evolve using elitism, uniform crossover and Gaussian mutation.
+Seats rotate; use `--rotations` equal to `--group-size` for every individual to
+occupy every seat. Each generation uses fresh training seeds. The final
+generation's winner is evaluated against Vanguard on separate validation seeds.
+It is **not automatically promoted**; the small initial run is only a smoke
+test. Within a group, all survivors' clocks stop when the match ends; fitness
+therefore also depends on the opponents and can favor groups that avoid combat.
+The same initial seed does not guarantee identical later random events when
+actions differ.
+
+```bash
+# New output path required. The number of full matches is
+# generations * train_seeds * (population / group_size) * rotations
+# plus validation_seeds * rotations.
+python3 -m simulator.neural_train --population 4 --group-size 4 \
+  --rotations 4 --generations 2 --train-seeds 2 --validation-seeds 2 \
+  --object-radius 200 --output /tmp/neural-policy.json
+
+python3 -m simulator --strategies neural vanguard --model /tmp/neural-policy.json \
+  --slots 4 --matches 4 --seed 2000042
+```
+
+Training emits per-match survival times and stores its settings, map/config
+hashes and held-out results in the model. To test a model in the tournament
+container, place it at `bot/neural_policy.json`, set `SELECTED_STRATEGY` to
+`neural`, and run the restricted conformance check before submitting. Do not
+assume simulator survival predicts leaderboard performance.
+
+The included initial model is a two-generation, four-individual smoke test.
+On one held-out seed with two seat rotations, it averaged 46.7 seconds of
+survival versus 267.8 seconds for its Vanguard opponents. This is too little
+evaluation for a reliable comparison, but it does not justify replacing the
+default.
 
 ## Docker validation
 

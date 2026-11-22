@@ -109,7 +109,7 @@ def _weapon_aim_priority(w, distance, precision=False):
     return -1
 
 
-def combat_action(obs, me, target, config, world=None, correct_mortar=False, precision=False):
+def combat_action(obs, me, target, config, world=None, correct_mortar=False, precision=False, commanded_aim=None):
     """Choose the best weapon's aim; independently gate each trigger on actual alignment."""
     actual = me.get("aim", [0.0, 0.0])
     aim = [float(actual[0]), float(actual[1])]
@@ -136,6 +136,8 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
         if candidates:
             _, _, yaw, pitch = max(candidates, key=lambda x: x[0])
             aim = [yaw, pitch]
+        if commanded_aim is not None:
+            aim = commanded_aim
 
         for slot, w in enumerate(weapons[:2]):
             if not w or slot not in solutions:
@@ -196,6 +198,12 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
                     # Once charging starts, keep holding while tracking the target;
                     # requiring perfect alignment every frame causes premature release.
                     fire[slot] = bool(direct_weapon_has_los and in_range and (aligned or charge > 0.01))
+                # The neural policy's commanded aim can diverge from the solved aim this
+                # tick; keep holding rather than releasing off-target, but only while the
+                # shot would still be viable (in range and not blocked), so a charge isn't
+                # held forever (and eventually force-released by hold_s) while unusable.
+                if commanded_aim is not None and charge > 0 and not aligned and in_range and direct_weapon_has_los:
+                    fire[slot] = True
                 # If target disappears, retain the charge until full rather than wasting it.
                 if charge >= min_charge and not target:
                     fire[slot] = False

@@ -7,9 +7,15 @@ from adaptive import load_policy
 
 
 def main():
-    if selected_strategy() == "adaptive":
+    strategy = selected_strategy()
+    if strategy == "adaptive":
         load_policy()
-    run(MechRoyaleBot)
+    if strategy == "neural":
+        from neural import NeuralBot, load_model
+        load_model()
+        run(NeuralBot)
+    else:
+        run(MechRoyaleBot)
 
 
 if __name__ == "__main__":

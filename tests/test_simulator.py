@@ -139,11 +139,39 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "completed")
         self.assertEqual([m["place"] for m in result["results"]], [2, 2])
         self.assertEqual([m["score"] for m in result["results"]], [0, 0])
+        self.assertEqual([m["survival_seconds"] for m in result["results"]], [self.sim.dt] * 2)
+        self.assertFalse(any(m["survival_censored"] for m in result["results"]))
 
     def test_truncation_does_not_assign_fake_placements(self):
         result = self.sim.run(0.5)
         self.assertEqual(result["status"], "truncated")
         self.assertTrue(all(m["place"] is None and m["score"] is None for m in result["results"]))
+        self.assertTrue(all(m["survival_seconds"] is None and m["survival_censored"]
+                            and m["observed_survival_seconds"] == result["seconds"] for m in result["results"]))
+
+    def test_survival_records_death_winner_and_timeout(self):
+        self.sim.mechs[0].hp = 0
+        self.sim.step()
+        result = self.sim.run()
+        self.assertEqual([m["survival_seconds"] for m in result["results"]], [self.sim.dt] * 2)
+        self.assertEqual([m["place"] for m in result["results"]], [2, 1])
+        config = copy.deepcopy(self.config)
+        config["match"]["duration_s"] = 0.1
+        sim = Simulator(["baseline", "vanguard"], 42, config, FlatWorld(), factory)
+        result = sim.run()
+        self.assertEqual([m["survival_seconds"] for m in result["results"]], [0.1, 0.1])
+        self.assertFalse(any(m["survival_censored"] for m in result["results"]))
+
+    def test_truncation_retains_completed_survival_for_eliminated_bots(self):
+        sim = Simulator(["baseline", "vanguard", "baseline"], 42, self.config, FlatWorld(), factory)
+        sim.mechs[0].hp = 0
+        sim.step()
+        result = sim.run(0.2)
+        self.assertEqual(result["status"], "truncated")
+        self.assertEqual(result["results"][0]["survival_seconds"], sim.dt)
+        self.assertFalse(result["results"][0]["survival_censored"])
+        self.assertTrue(all(m["survival_seconds"] is None and m["survival_censored"]
+                            for m in result["results"][1:]))
 
     def test_seeded_match_is_reproducible(self):
         config = copy.deepcopy(self.config)

@@ -108,6 +108,7 @@ class Mech:
     action: dict = field(default_factory=dict)
     desired_aim: list = field(default_factory=list)
     place: int | None = None
+    survival_seconds: float | None = None
     kills: int = 0
     shots: int = 0
     hits: int = 0
@@ -159,8 +160,13 @@ class Simulator:
             hello = {"type": "hello", "protocol": "mechfight/1", "slot": slot,
                      "seed": 1000 + slot, "map": {"dir": str(getattr(world, "root", ROOT / "arena")),
                      "files": ["v2/world.json", "v2/terrain.i16"]}, "config": config}
-            bot = (bot_factory(hello, strategy, world) if bot_factory else
-                   MechRoyaleBot(hello, strategy=strategy, world=world))
+            if bot_factory:
+                bot = bot_factory(hello, strategy, world)
+            elif strategy == "neural":
+                from neural import NeuralBot
+                bot = NeuralBot(hello, world=world)
+            else:
+                bot = MechRoyaleBot(hello, strategy=strategy, world=world)
             mech = config["mech"]
             self.mechs.append(Mech(slot, strategy, bot, pos, [self.rng.uniform(-math.pi, math.pi), 0.0],
                                    float(mech["hp"]), float(mech["energy"])))
@@ -818,11 +824,13 @@ class Simulator:
                 self.loot.death(mech)
                 self.sounds.append(("death", mech.id, mech.pos[:], self.time))
                 mech.place = len(active)
+                mech.survival_seconds = (self.tick + 1) * self.dt
         self.loot.step([m for m in active if m.place is None])
         self.tick += 1
         survivors = [m for m in self.mechs if m.place is None]
         if len(survivors) == 1:
             survivors[0].place = 1
+            survivors[0].survival_seconds = self.time
 
     def _separate(self, active):
         for i, first in enumerate(active):
@@ -858,11 +866,15 @@ class Simulator:
         if len(survivors) > 1 and self.time >= duration:
             for mech in survivors:
                 mech.place = 1 + sum(other.hp > mech.hp for other in survivors)
+                mech.survival_seconds = self.time
         completed = all(m.place is not None for m in self.mechs)
         return {"seed": self.seed, "status": "completed" if completed else "truncated",
                 "seconds": round(self.time, 3), "results": [
                     {"slot": m.id, "strategy": m.strategy, "place": m.place,
                      "score": len(self.mechs) - m.place if m.place is not None else None,
+                     "survival_seconds": round(m.survival_seconds, 3) if m.survival_seconds is not None else None,
+                     "observed_survival_seconds": round(m.survival_seconds if m.survival_seconds is not None else self.time, 3),
+                     "survival_censored": m.survival_seconds is None,
                      "hp": round(max(0.0, m.hp), 2), "kills": m.kills,
                      "shots": m.shots, "hits": m.hits, "damage": round(m.damage, 2),
                      "cubes": m.cubes, "upgrades": m.upgrades[:]}
