@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 # Change this value and submit the resulting commit to test a different policy.
-SELECTED_STRATEGY = "tactician"
+SELECTED_STRATEGY = "neural"
 STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher", "vanguard", "adaptive", "tactician", "neural")
 
 
