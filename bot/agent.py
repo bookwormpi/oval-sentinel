@@ -93,10 +93,12 @@ class MechRoyaleBot:
         self.tick_count += 1
         me = obs["self"]
         now = float(obs.get("t", 0))
-        for event in obs.get("events", []):
-            if event.get("type") == "damaged" and event.get("by") is not None:
-                self.last_attacker = event["by"]
-                self.last_damage_t = now
+        damage_events = [event for event in obs.get("events", [])
+                         if event.get("type") == "damaged" and event.get("weapon") != "zone"]
+        if damage_events:
+            worst = max(damage_events, key=lambda event: float(event.get("amount", 0)))
+            self.last_attacker = worst.get("by")
+            self.last_damage_t = now
 
         recent_attacker = self.last_attacker if now-self.last_damage_t < 2.5 else None
         target = choose_target(obs, me, recent_attacker, self.current_target_id)
@@ -117,7 +119,8 @@ class MechRoyaleBot:
         evasion, danger, nearby = self._threat_vector(obs, me)
         if nearby >= 2:
             danger = max(danger, 0.60)
-        dodge, projectile_urgency = projectile_dodge(obs, me, correct_side=self.strategy in ("vanguard", "adaptive"))
+        dodge, projectile_urgency = projectile_dodge(
+            obs, me, correct_side=self.strategy in ("vanguard", "adaptive"), config=self.config)
         urgency = max(danger, projectile_urgency)
         # Rooftop loot is only ever chosen as a goal when calm and safe (see
         # choose_variant_goal); still require calm here too, since the goal can
@@ -161,13 +164,17 @@ class MechRoyaleBot:
         aim, fire, reload_now, target_info = combat_action(
             obs, me, target, self.config, self.world,
             correct_mortar=self.strategy != "baseline", precision=self.strategy in ("vanguard", "adaptive"))
+        defensive_events = [event for event in damage_events if event.get("bearing") is not None
+                            and (event.get("rear") or target is None)]
         damage_bearing = None
-        for event in obs.get("events", []):
-            if event.get("type") == "damaged" and event.get("bearing") is not None:
-                if event.get("rear") or target is None:
-                    if event.get("weapon") != "zone":
-                        damage_bearing = float(event["bearing"])
-                        aim = [damage_bearing, aim[1]]
+        if defensive_events:
+            worst = max(defensive_events, key=lambda event: float(event.get("amount", 0)))
+            damage_bearing = float(worst["bearing"])
+            aim = [damage_bearing, aim[1]]
+            if target and self.strategy in ("vanguard", "adaptive"):
+                aim, fire, reload_now, target_info = combat_action(
+                    obs, me, target, self.config, self.world, correct_mortar=True,
+                    precision=True, commanded_aim=aim)
 
         # Sweep from actual yaw so the torso keeps rotating even after interruptions.
         if target is None:
@@ -206,7 +213,7 @@ class MechRoyaleBot:
             "tick": obs["tick"],
             "move": move,
             "boost": survival_boost(obs, goal_distance, urgency),
-            "jump": should_jump(obs, max(urgency, projectile_urgency)),
+            "jump": should_jump(obs, max(urgency, projectile_urgency), projectile_urgency),
             "aim": [round(float(aim[0]), 5), round(float(aim[1]), 5)],
             "fire": fire,
             "reload": reload_now,
@@ -219,7 +226,9 @@ class MechRoyaleBot:
         pick = choose_upgrade(obs, self.hello)
         if pick is not None:
             action["pick"] = pick
-        take, drop = choose_take(obs)
+        take, drop = choose_take(obs, self.config)
+        if drop is not None and urgency > 0.25:
+            take, drop = None, None
         if take is not None:
             action["take"] = take
         if drop is not None:

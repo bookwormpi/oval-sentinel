@@ -41,6 +41,76 @@ class CombatTests(unittest.TestCase):
                               "aim": [math.pi, 0.0], "hp": 1400.0, "max_hp": 1400.0}
         self.assertEqual(choose_target({"mechs": [near_death, full_health_closer]}, me)["id"], 2)
 
+    def test_zero_reported_hp_is_not_treated_as_unknown(self):
+        empty = dict(self.target, id=2, hp=0.0, pos=[50.0, 0.0, 0.0])
+        healthy = dict(self.target, id=3, hp=500.0, pos=[50.0, 0.0, 0.0])
+        self.assertEqual(choose_target({"mechs": [empty, healthy]}, self.me)["id"], 2)
+
+    def test_precision_targets_actual_scaled_mech_and_crate_centers(self):
+        gun = self.me["weapons"][0]
+        target = dict(self.target, pos=[100, 0, 0], cubes=10)
+        _, pitch, _, _ = predict_target(self.me, target, gun, self.config, True)
+        self.assertAlmostEqual(pitch, math.atan2(6.75 - 7, 100))
+        target = {"kind": "crate", "pos": [30, 0, 0], "vel": [0, 0, 0]}
+        _, pitch, _, _ = predict_target(self.me, target, gun, self.config, True)
+        self.assertAlmostEqual(pitch, math.atan2(1.2 - 7, 30))
+
+    def test_precision_targets_configured_npc_height(self):
+        target = {"kind": "npc", "pos": [50, 0, 0], "vel": [0, 0, 0]}
+        config = {**self.config, "npc": {"height": 8}}
+        _, pitch, _, _ = predict_target(self.me, target, self.me["weapons"][0], config, True)
+        self.assertAlmostEqual(pitch, math.atan2(4 - 7, 50))
+
+    def test_pitch_limit_does_not_make_an_unreachable_target_appear_aligned(self):
+        self.me["weapons"][1] = None
+        self.config["mech"]["max_pitch"] = 0.3
+        self.me["aim"] = [0.0, 0.3]
+        self.target["pos"] = [30.0, 0.0, 100.0]
+        _, fire, _, _ = combat_action({}, self.me, self.target, self.config,
+                                       correct_mortar=True, precision=True)
+        self.assertFalse(fire[0])
+
+    def test_unreachable_ballistic_solution_does_not_fire_mortar(self):
+        self.me["weapons"] = [None, {"kind": "mortar", "cooldown": 0.0,
+                                     "stats": {"speed": 72, "gravity": 22}}]
+        self.target["pos"] = [100.0, 0.0, 300.0]
+        _, pitch, _, _ = predict_target(self.me, self.target, self.me["weapons"][1], self.config, True)
+        self.assertIsNone(pitch)
+        _, fire, _, _ = combat_action({}, self.me, self.target, self.config,
+                                       correct_mortar=True, precision=True)
+        self.assertFalse(fire[1])
+
+    def test_upgraded_mortar_can_fire_beyond_legacy_215_m_cutoff(self):
+        mortar = {"kind": "mortar", "cooldown": 0.0, "stats": {"speed": 100, "gravity": 22}}
+        self.me["weapons"] = [None, mortar]
+        self.target["pos"] = [250.0, 0.0, 0.0]
+        yaw, pitch, _, _ = predict_target(self.me, self.target, mortar, self.config, True)
+        self.me["aim"] = [yaw, pitch]
+        _, fire, _, _ = combat_action({}, self.me, self.target, self.config,
+                                       correct_mortar=True, precision=True)
+        self.assertTrue(fire[1])
+
+    def test_out_of_range_gun_does_not_override_usable_mortar(self):
+        self.me["weapons"][0]["stats"]["range"] = 50
+        self.me["weapons"][1] = {"kind": "mortar", "cooldown": 0,
+                                  "stats": {"speed": 72, "gravity": 22}}
+        self.target["pos"] = [100.0, 0.0, 0.0]
+        aim, _, _, _ = combat_action({}, self.me, self.target, self.config,
+                                      correct_mortar=True, precision=True)
+        self.assertGreater(aim[1], 0.1)
+
+    def test_out_of_range_laser_does_not_override_usable_gun(self):
+        self.me["weapons"][1]["stats"]["range"] = 50
+        self.target["pos"], self.target["vel"] = [100.0, 0.0, 0.0], [0.0, 20.0, 0.0]
+        aim, _, _, _ = combat_action({}, self.me, self.target, self.config,
+                                      correct_mortar=True, precision=True)
+        self.assertGreater(aim[0], 0.05)
+
+    def test_reload_finds_gun_in_secondary_slot(self):
+        self.me["weapons"] = [{"kind": "mortar"}, {"kind": "gun", "ammo": 0, "reload": 0}]
+        _, _, reload_now, _ = combat_action({}, self.me, None, self.config)
+        self.assertTrue(reload_now)
+
     def test_secondary_laser_controls_aim_at_range(self):
         aim, fire, _, _ = combat_action({"mechs": []}, self.me, self.target, self.config)
         self.assertAlmostEqual(aim[0], math.pi/2, places=3)
@@ -86,6 +156,36 @@ class CombatTests(unittest.TestCase):
         obs = {"projectiles": [{"kind": "gun", "pos": [0, -3, 4], "vel": [0, -20, 0]}]}
         _, urgency = projectile_dodge(obs, self.me)
         self.assertEqual(urgency, 0.0)
+
+    def test_projectile_about_to_hit_is_not_discarded(self):
+        obs = {"projectiles": [{"kind": "gun", "pos": [0, -0.2, 4], "vel": [0, 20, 0]}]}
+        _, urgency = projectile_dodge(obs, self.me, correct_side=True)
+        self.assertGreater(urgency, 0.0)
+
+    def test_vertical_projectile_on_collision_course_triggers_lateral_dodge(self):
+        obs = {"projectiles": [{"kind": "gun", "pos": [0, 0, 20], "vel": [0, 0, -40]}]}
+        direction, urgency = projectile_dodge(obs, self.me, correct_side=True)
+        self.assertGreater(urgency, 0.0)
+        self.assertGreater(math.hypot(*direction), 0.9)
+        obs["projectiles"][0]["vel"][2] = 40
+        self.assertEqual(projectile_dodge(obs, self.me, correct_side=True)[1], 0.0)
+
+    def test_dodge_accounts_for_increased_mech_radius(self):
+        self.me["stats"]["radius"] = 10.0
+        obs = {"projectiles": [{"kind": "gun", "pos": [8, -10, 4], "vel": [0, 20, 0]}]}
+        self.assertGreater(projectile_dodge(obs, self.me, correct_side=True)[1], 0)
+
+    def test_mortar_dodge_uses_configured_gravity(self):
+        obs = {"projectiles": [{"kind": "mortar", "pos": [0, -10, 20], "vel": [0, 20, 0]}]}
+        self.assertEqual(projectile_dodge(obs, self.me)[1], 0)
+        config = {"weapons": {"mortar": {"gravity": 100}}}
+        self.assertGreater(projectile_dodge(obs, self.me, config=config)[1], 0)
+
+    def test_mortar_dodge_uses_configured_splash_radius(self):
+        obs = {"projectiles": [{"kind": "mortar", "pos": [18, -10, 4], "vel": [0, 20, 0]}]}
+        self.assertEqual(projectile_dodge(obs, self.me)[1], 0)
+        config = {"weapons": {"mortar": {"splash_radius": 20}}}
+        self.assertGreater(projectile_dodge(obs, self.me, config=config)[1], 0)
 
     def test_corrected_dodge_moves_away_from_projectile_path(self):
         for shot_x in (-1.0, 1.0):
@@ -159,7 +259,7 @@ class CombatTests(unittest.TestCase):
                 vy = 72 * math.cos(pitch) * math.sin(yaw)
                 flight = 100.0 / (vx - velocity[0])
                 self.assertAlmostEqual(vy * flight, velocity[1] * flight, delta=0.1)
-                shell_z = 7.0 + 72 * math.sin(pitch) * flight - 11 * flight * flight
+                shell_z = 9.5 + 72 * math.sin(pitch) * flight - 11 * flight * flight
                 self.assertAlmostEqual(shell_z, 4.5, delta=0.1)
 
 

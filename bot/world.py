@@ -99,10 +99,15 @@ class World:
         distance = math.sqrt(dx*dx+dy*dy+dz*dz)
         # A 3 m sample interval is already below the mech radius. Cap long
         # sightlines to avoid work proportional to arena distance.
-        n = max(3, min(96, int(distance/3.0)))
+        n = max(3, min(96, math.ceil(distance/3.0)))
         for i in range(1, n):
             t = i/n
             x, y, z = a[0]+dx*t, a[1]+dy*t, a[2]+dz*t
+            if self.terrain is not None and z < self.ground(x, y):
+                if len(self.los_cache) >= 128:
+                    self.los_cache.clear()
+                self.los_cache[key] = False
+                return False
             for j, p in enumerate(self.prisms):
                 bounds = self.prism_bounds[j]
                 if x < bounds[0] or x > bounds[2] or y < bounds[1] or y > bounds[3]:

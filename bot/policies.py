@@ -5,7 +5,7 @@ import math
 from adaptive import DEFAULT_PARAMETERS
 from geometry import dist2, unit2
 from navigation import zone_state
-from strategy import WEAPON_VALUE, SWAP_MARGIN
+from strategy import WEAPON_VALUE, SWAP_MARGIN, effective_walk_speed
 
 
 def _climb_budget(me):
@@ -38,6 +38,8 @@ def _zone_goal(obs, world, lead_seconds=12.0):
     center, radius = zone_state(zone, obs["t"])
     margin = min(20.0, radius * 0.1)
     point = _interior_point(pos, center, radius, margin)
+    if not me["in_zone"] and dist2(pos, point) <= 0.5:
+        point = center
     if dist2(pos, point) > 0.5 or not me["in_zone"]:
         return (point[0], point[1], world.ground(*point)), "zone"
 
@@ -45,7 +47,7 @@ def _zone_goal(obs, world, lead_seconds=12.0):
     next_radius = float(zone["next_radius"])
     point = _interior_point(pos, next_center, next_radius, min(20.0, next_radius * 0.1))
     distance = dist2(pos, point)
-    speed = max(1.0, float(me.get("stats", {}).get("walk_speed", 11.7)))
+    speed = effective_walk_speed(me)
     time_left = max(0.0, float(zone["shrink_end"]) - float(obs["t"]))
     if distance > 1.0 and time_left <= distance / speed + lead_seconds:
         return (point[0], point[1], world.ground(*point)), "zone"
@@ -73,11 +75,8 @@ def choose_variant_goal(obs, world, mode, parameters=None):
         return_distance = dist2(point, next_point)
         if return_distance <= 0.5:
             return True
-        speed = max(1.0, float(me.get("stats", {}).get("walk_speed", 11.7)))
-        if any(w and w.get("kind") == "laser" and float(w.get("charge", 0)) > 0
-               for w in me.get("weapons", [])):
-            speed *= float(me.get("stats", {}).get("charge_move_mult", 0.5))
-        travel_time = (dist2(pos, point) + return_distance) / max(1.0, speed)
+        speed = effective_walk_speed(me)
+        travel_time = (dist2(pos, point) + return_distance) / speed
         time_left = float(zone["shrink_end"]) - float(obs["t"])
         return travel_time + action_seconds + params["zone_lead_seconds"] <= time_left
 
@@ -108,7 +107,10 @@ def choose_variant_goal(obs, world, mode, parameters=None):
         return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
 
     # A full repair and three cubes can justify a detour, including early in a match.
-    for drop in obs.get("drops", []):
+    for drop in sorted(obs.get("drops", []), key=lambda item: (
+            0 if item.get("holder") == me["id"] and
+            dist2(pos, item["pos"]) <= float(item.get("radius", 8.0)) else 1,
+            dist2(pos, item["pos"]))):
         point = drop["pos"]
         radius_drop = float(drop.get("radius", 8.0))
         distance = dist2(pos, point)
@@ -140,9 +142,10 @@ def choose_variant_goal(obs, world, mode, parameters=None):
         if len(slots) > 1:
             current = slots[1]
             current_value = WEAPON_VALUE.get(current["kind"], 0) if current else -1.0
+            held = {weapon["kind"] for weapon in slots if weapon}
             for pickup in obs.get("pickups", []):
                 weight = WEAPON_VALUE.get(pickup["kind"], 0)
-                if not weight or weight <= current_value + SWAP_MARGIN:
+                if not weight or pickup["kind"] in held or weight <= current_value + SWAP_MARGIN:
                     continue
                 point = pickup["pos"]
                 distance = dist2(pos, point)

@@ -63,6 +63,20 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(kind, "zone")
         self.assertEqual(goal[:2], (90.0, 0.0))
 
+    def test_zone_departure_accounts_for_slow_charging_laser(self):
+        self.obs["t"] = 92.0
+        self.obs["self"]["pos"] = [120.0, 0.0, 0.0]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "survivor")[1], "hold")
+        self.obs["self"]["weapons"][1] = {"kind": "laser", "charge": 0.5}
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "survivor")[1], "zone")
+
+    def test_outside_zone_never_targets_current_position_when_center_is_known(self):
+        self.obs["self"]["pos"] = [20.0, 0.0, 0.0]
+        self.obs["self"]["in_zone"] = False
+        goal, kind = choose_variant_goal(self.obs, self.world, "survivor")
+        self.assertEqual(kind, "zone")
+        self.assertEqual(goal[:2], (0.0, 0.0))
+
     def test_loot_detour_reserves_time_to_reach_next_zone(self):
         self.obs["self"]["pos"] = [60.0, 0.0, 0.0]
         self.obs["cubes"] = [{"id": 5000, "pos": [130.0, 0.0, 0.0]}]
@@ -109,6 +123,11 @@ class PolicyTests(unittest.TestCase):
         self.obs["cubes"] = [{"id": 5000, "pos": [40.0, 0.0, 0.0]}]
         self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "cube")
         self.assertEqual(choose_variant_goal(self.obs, self.world, "survivor")[1], "hold")
+
+    def test_scavenger_does_not_chase_weapon_already_held_in_other_slot(self):
+        self.obs["self"]["weapons"] = [{"kind": "laser"}, None]
+        self.obs["pickups"] = [{"id": 8000, "kind": "laser", "pos": [20.0, 0.0, 0.0]}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
 
     def test_scavenger_avoids_contested_and_rooftop_loot(self):
         self.obs["cubes"] = [{"id": 5000, "pos": [40.0, 0.0, 0.0]},
@@ -163,6 +182,18 @@ class PolicyTests(unittest.TestCase):
         direction, speed = variant_movement("scavenger", self.obs, None, kind,
                                              (0, 0), (0, 0), (0, 0), 0, 0)
         self.assertEqual((direction, speed), ((0.0, 0.0), 0.0))
+
+    def test_closest_eligible_drop_is_preferred_without_abandoning_capture(self):
+        self.obs["drops"] = [
+            {"pos": [50.0, 0.0, 0.0], "radius": 8.0, "lands_in": 0, "holder": None},
+            {"pos": [10.0, 0.0, 0.0], "radius": 8.0, "lands_in": 0, "holder": None},
+        ]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[0][:2], (10.0, 0.0))
+        self.obs["drops"] = [
+            {"pos": [6.0, 0.0, 0.0], "radius": 8.0, "lands_in": 0, "holder": 2, "progress": 3},
+            {"pos": [1.0, 0.0, 0.0], "radius": 8.0, "lands_in": 0, "holder": None},
+        ]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[0][:2], (6.0, 0.0))
 
     def test_scavenger_farms_crates_only_when_safe(self):
         self.obs["crates"] = [{"id": 1000, "pos": [30.0, 0.0, 0.0]}]
@@ -296,6 +327,64 @@ class PolicyTests(unittest.TestCase):
         self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [0.0, 100.0, 0.0],
                                "vel": [0.0, 0.0, 0.0], "aim": [0.0, 0.0], "hp": 1400}]
         self.assertAlmostEqual(bot.act(self.obs)["aim"][0], math.pi / 2, places=5)
+
+    def test_rear_defense_does_not_fire_using_the_previous_aim(self):
+        bot = self.radar_bot()
+        self.obs["self"]["aim"] = [0.0, math.atan2(-2.5, 100)]
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [100.0, 0.0, 0.0],
+                               "vel": [0.0, 0.0, 0.0], "aim": [math.pi, 0.0], "hp": 1400}]
+        self.obs["events"] = [{"type": "damaged", "weapon": "gun", "by": 4,
+                                "amount": 45, "bearing": math.pi / 2, "rear": True}]
+        action = bot.act(self.obs)
+        self.assertAlmostEqual(action["aim"][0], math.pi / 2, places=5)
+        self.assertFalse(action["fire"][0])
+
+    def test_rear_defense_holds_charged_laser_instead_of_firing_off_target(self):
+        bot = self.radar_bot()
+        self.obs["self"]["aim"] = [0.0, math.atan2(-2.5, 100)]
+        self.obs["self"]["weapons"][1] = {
+            "kind": "laser", "charge": 0.75, "cooldown": 0,
+            "stats": {"charge": 0.75, "range": 280},
+        }
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [100.0, 0.0, 0.0],
+                               "vel": [0.0, 0.0, 0.0], "aim": [math.pi, 0.0], "hp": 1400}]
+        self.obs["events"] = [{"type": "damaged", "weapon": "gun", "by": 4,
+                                "amount": 45, "bearing": math.pi / 2, "rear": True}]
+        action = bot.act(self.obs)
+        self.assertAlmostEqual(action["aim"][0], math.pi / 2, places=5)
+        self.assertTrue(action["fire"][1])
+
+    def test_weapon_swap_waits_until_immediate_threat_passes(self):
+        bot = self.radar_bot()
+        self.obs["self"]["weapons"][1] = {"kind": "mortar", "cooldown": 0, "stats": {}}
+        self.obs["pickups"] = [{"id": 8000, "kind": "laser", "pos": [2, 0, 0]}]
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [20, 0, 0],
+                               "vel": [0, 0, 0], "aim": [math.pi, 0], "hp": 1400}]
+        action = bot.act(self.obs)
+        self.assertNotIn("take", action)
+        self.obs["mechs"] = []
+        action = bot.act(self.obs)
+        self.assertEqual((action["take"], action["drop"]), (8000, 1))
+
+    def test_unknown_attacker_damage_suppresses_crate_farming(self):
+        bot = self.radar_bot()
+        self.obs["crates"] = [{"id": 1000, "pos": [30.0, 0.0, 0.0]}]
+        self.obs["events"] = [{"type": "damaged", "weapon": "gun", "by": None,
+                                "amount": 45, "bearing": 0.0}]
+        bot.act(self.obs)
+        self.assertIsNone(bot.current_combat_target)
+        self.assertEqual(bot.last_damage_t, 0.0)
+
+    def test_largest_rear_hit_controls_defensive_facing_and_attacker(self):
+        bot = self.radar_bot()
+        self.obs["events"] = [
+            {"type": "damaged", "weapon": "mortar", "by": 3, "amount": 200,
+             "bearing": 1.0, "rear": True},
+            {"type": "damaged", "weapon": "gun", "by": 4, "amount": 45,
+             "bearing": -1.0, "rear": True},
+        ]
+        self.assertEqual(bot.act(self.obs)["aim"][0], 1.0)
+        self.assertEqual(bot.last_attacker, 3)
 
     def test_scavenger_fires_on_safe_crate_through_agent(self):
         self.obs.update({"tick": 2, "sounds": [], "events": [], "projectiles": []})

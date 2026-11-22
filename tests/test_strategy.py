@@ -1,7 +1,7 @@
 import sys, unittest
 from unittest.mock import patch
 sys.path.insert(0, "bot")
-from strategy import _effect_value, choose_take, choose_upgrade
+from strategy import _effect_value, choose_take, choose_upgrade, should_jump, survival_boost
 
 class StrategyTests(unittest.TestCase):
     def test_take_only_nearby_weapon(self):
@@ -33,6 +33,37 @@ class StrategyTests(unittest.TestCase):
             self.assertEqual(choose_take(obs), (None, None))
             obs["self"]["weapons"][1]["charge"] = 0.0
             self.assertEqual(choose_take(obs), (5, 1))
+
+    def test_take_avoids_weapons_already_held_in_either_slot(self):
+        obs = {"self": {"pos": [0, 0, 0], "weapons": [{"kind": "laser"}, None]},
+               "pickups": [{"id": 5, "kind": "laser", "pos": [2, 0, 0]},
+                           {"id": 6, "kind": "mortar", "pos": [3, 0, 0]}]}
+        self.assertEqual(choose_take(obs), (6, None))
+
+    def test_take_uses_configured_horizontal_radius_and_fixed_vertical_limit(self):
+        obs = {"self": {"pos": [0, 0, 0], "weapons": [{"kind": "gun"}, None]},
+               "pickups": [{"id": 5, "kind": "laser", "pos": [5, 0, 0]}]}
+        self.assertEqual(choose_take(obs, {"loot": {"pickup_radius": 6}}), (5, None))
+        obs["pickups"][0]["pos"][2] = 4.1
+        self.assertEqual(choose_take(obs, {"loot": {"pickup_radius": 6}}), (None, None))
+
+    def test_lethal_zone_escape_uses_remaining_energy_for_a_short_boost(self):
+        obs = {"self": {"in_zone": False, "grounded": True, "energy": 5,
+                        "hp": 10, "max_hp": 1400, "stats": {"walk_speed": 10}, "weapons": []},
+               "zone": {"dps": 160}}
+        self.assertTrue(survival_boost(obs, 4))
+        obs["self"]["hp"] = 1400
+        self.assertFalse(survival_boost(obs, 4))
+
+    def test_airborne_zone_escape_does_not_waste_energy_on_vertical_jets(self):
+        obs = {"self": {"in_zone": False, "grounded": False, "energy": 100}}
+        self.assertFalse(survival_boost(obs, 50, 0))
+        self.assertTrue(survival_boost(obs, 50, 0.8))
+
+    def test_imminent_projectile_can_trigger_free_jump_at_low_energy(self):
+        obs = {"self": {"grounded": True, "energy": 0}}
+        self.assertTrue(should_jump(obs, 0.9, 0.9))
+        self.assertFalse(should_jump(obs, 0.9, 0.0))
 
     def test_upgrade_armor(self):
         hello = {"config": {"upgrades": [{"id":"armor", "max":3, "effects":[]}]}}

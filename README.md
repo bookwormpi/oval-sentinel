@@ -57,6 +57,21 @@ A simulator comparison of the detour change alone used eight seeds and two
 mirrored eight-bot matches per seed: mean normalized placement difference
 was +0.009 with seed-level standard error 0.015. This does not establish a
 performance improvement; the later inward-movement fallback was not included.
+
+The current survival controls also account for laser charging when estimating
+zone-escape time, conserve airborne jet energy during horizontal zone travel,
+and use remaining boost energy when walking out would be lethal. They defer
+weapon swaps under immediate threat, avoid duplicate weapons, and prefer nearby
+eligible supply drops without abandoning an active capture. Incoming-projectile
+evasion accounts for mech size, near-immediate impacts, vertical approaches,
+and configured mortar gravity and splash radius.
+
+Precision combat checks use configured target dimensions, the mortar's actual
+tube height, attainable pitch and ballistic solutions, usable weapon range,
+and terrain-aware line of sight. Rear-hit facing updates also recheck the
+trigger against the new command. These are control and safety corrections;
+their effect on tournament placement is not established by unit tests or the
+approximate simulator. Terrain LOS is sampled and may miss narrow obstructions.
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash

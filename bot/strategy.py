@@ -112,7 +112,7 @@ WEAPON_VALUE = {"laser": 1.0, "lightning": 0.95, "mortar": 0.70}
 SWAP_MARGIN = 0.1
 
 
-def choose_take(obs):
+def choose_take(obs, config=None):
     """Return (take_id, drop_slot); both are None if nothing worth taking is near."""
     me = obs["self"]
     slots = me.get("weapons", [None, None])
@@ -121,14 +121,16 @@ def choose_take(obs):
     x, y, z = me["pos"]
     current = slots[1]
     current_value = WEAPON_VALUE.get(current["kind"], 0) if current else -1.0
+    held = {weapon["kind"] for weapon in slots if weapon}
+    pickup_radius = float((config or {}).get("loot", {}).get("pickup_radius", 4.0))
     options = []
     for p in obs.get("pickups", []):
         w = WEAPON_VALUE.get(p["kind"], 0)
-        if w <= 0:
+        if w <= 0 or p["kind"] in held:
             continue
         dxy = math_hypot(x-p["pos"][0], y-p["pos"][1])
         dz = abs(z-p["pos"][2])
-        if dxy <= 4.0 and dz <= 4.0:
+        if dxy <= pickup_radius and dz <= 4.0:
             options.append((w, p["id"]))
     if not options:
         return None, None
@@ -146,12 +148,25 @@ def math_hypot(x, y):
     return (x*x + y*y) ** 0.5
 
 
+def effective_walk_speed(me):
+    stats = me.get("stats", {})
+    speed = float(stats.get("walk_speed", 11.7))
+    if any(w and w.get("kind") == "laser" and float(w.get("charge", 0)) > 0
+           for w in me.get("weapons", [])):
+        speed *= float(stats.get("charge_move_mult", 0.5))
+    return max(1.0, speed)
+
+
 def survival_boost(obs, goal_distance, danger=0.0):
     me = obs["self"]
     energy = float(me.get("energy", 0))
     if not me.get("grounded", True):
-        return energy > 18 and (danger > 0.25 or not me.get("in_zone", True))
+        return energy > 18 and danger > 0.25
     if not me.get("in_zone", True):
+        zone_dps = float(obs.get("zone", {}).get("dps", 0))
+        walk_time = goal_distance / effective_walk_speed(me)
+        if energy > 0 and goal_distance > 1 and me["hp"] <= zone_dps * walk_time:
+            return True
         return energy > 12 and goal_distance > 12
     if danger > 0.55 and energy > 28:
         return True
@@ -161,6 +176,7 @@ def survival_boost(obs, goal_distance, danger=0.0):
     return energy > 72 and goal_distance > 55
 
 
-def should_jump(obs, urgency=0.0):
+def should_jump(obs, urgency=0.0, projectile_urgency=0.0):
     me = obs["self"]
-    return bool(me.get("grounded") and me.get("energy", 0) > 20 and urgency > 0.72)
+    return bool(me.get("grounded") and urgency > 0.72
+                and (me.get("energy", 0) > 20 or projectile_urgency > 0.72))

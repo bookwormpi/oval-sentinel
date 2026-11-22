@@ -8,6 +8,16 @@ def _bearing_to(a, b):
     return math.atan2(b[1] - a[1], b[0] - a[0])
 
 
+def _target_height(target, config):
+    kind = target.get("kind")
+    if kind == "mech":
+        size = 1.0 + float(config.get("cubes", {}).get("size_per_cube", 0.05)) * float(target.get("cubes", 0))
+        return float(config.get("mech", {}).get("height", 9.0)) * size
+    if kind == "npc":
+        return float(config.get("npc", {}).get("height", 3.5))
+    return float(config.get("crates", {}).get("height", 2.4))
+
+
 def choose_target(obs, me, recent_attacker=None, current_target_id=None):
     """Prefer enemies who are close, aiming at us, charging, recently damaging us,
     or near death (finishing them denies their HP/energy regen for good)."""
@@ -23,7 +33,7 @@ def choose_target(obs, me, recent_attacker=None, current_target_id=None):
         # Cube stacking raises max HP, so a fixed baseline under- or over-states
         # how close a buffed enemy actually is to death; use its real max HP.
         max_hp = float(e.get("max_hp", 1400) or 1400)
-        hp = float(e.get("hp", 0.64 * max_hp) or 0.64 * max_hp)
+        hp = float(e.get("hp", 0.64 * max_hp))
         hp_frac = clamp(hp / max(1.0, max_hp), 0.0, 1.0)
         low_hp = 1.0 + 0.32 * (1.0 - hp_frac)
         if hp_frac < 0.15:
@@ -52,10 +62,13 @@ def choose_target(obs, me, recent_attacker=None, current_target_id=None):
 
 def predict_target(me, target, weapon, config, correct_mortar=False):
     stats_me = me.get("stats", {})
-    muzzle_h = float(stats_me.get("muzzle_height", 7.0))
+    muzzle_h = (float(stats_me.get("height", config.get("mech", {}).get("height", 9.0))) + 0.5
+                if correct_mortar and weapon["kind"] == "mortar" else
+                float(stats_me.get("muzzle_height", 7.0)))
     origin = (me["pos"][0], me["pos"][1], me["pos"][2] + muzzle_h)
     tp = target["pos"]
-    target_h = 4.5 if target.get("kind") == "mech" else 1.75
+    target_h = (_target_height(target, config) * 0.5 if correct_mortar else
+                4.5 if target.get("kind") == "mech" else 1.75)
     aimpoint = (tp[0], tp[1], tp[2] + target_h)
     r = tuple(aimpoint[i] - origin[i] for i in range(3))
     vel = tuple(target.get("vel", [0, 0, 0]))
@@ -75,7 +88,7 @@ def predict_target(me, target, weapon, config, correct_mortar=False):
         yaw = math.atan2(r[1], r[0])
         pitch = ballistic_pitch(horizontal, r[2], speed, gravity)
         if pitch is None:
-            return yaw, 0.0, dist3(origin, aimpoint), r
+            return yaw, None if correct_mortar else 0.0, dist3(origin, aimpoint), r
         for _ in range(6 if correct_mortar else 3):
             flight = horizontal / max(1e-3, speed * math.cos(pitch))
             qx = r[0] + relative_vel[0] * flight
@@ -87,6 +100,8 @@ def predict_target(me, target, weapon, config, correct_mortar=False):
             predicted_horizontal = math.hypot(qx, qy)
             next_pitch = ballistic_pitch(predicted_horizontal, qz, speed, gravity)
             if next_pitch is None:
+                if correct_mortar:
+                    return yaw, None, dist3(origin, aimpoint), r
                 break
             pitch = next_pitch
             if correct_mortar:
@@ -105,17 +120,23 @@ def _weapon_aim_priority(w, distance, precision=False):
         charge = float(w.get("charge", 0))
         if charge > 0.01:
             return 240
-        if precision and float(w.get("cooldown", 0)) > 0:
+        if precision and (float(w.get("cooldown", 0)) > 0
+                          or distance >= float(stats.get("range", 280)) * 0.98):
             return -1
         return 125 if distance >= 65 and distance <= float(stats.get("range", 280)) * 0.98 else 75
     if kind == "gun":
         if int(w.get("ammo", 1)) <= 0 or float(w.get("reload", 0)) > 0:
             return 35
+        if precision and distance >= float(stats.get("range", 230)) * 0.985:
+            return -1
         return 110 if distance <= float(stats.get("range", 230)) else 95
     if kind == "mortar":
         # Use the mortar as a fallback when the gun is empty/reloading; avoid
         # trading reliable gun damage for a slow, self-splashing shell.
-        return 72 if 28 < distance < min(215, float(stats.get("range", 235))) else -1
+        speed = float(stats.get("speed", 72))
+        gravity = float(stats.get("gravity", 22))
+        maximum = float(stats.get("range", speed * speed / max(1e-6, gravity))) if precision else 215
+        return 72 if 28 < distance < maximum else -1
     return -1
 
 
@@ -129,8 +150,9 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
     solutions = {}
     if target:
         target_pos = target["pos"]
-        aimpoint = (target_pos[0], target_pos[1],
-                    target_pos[2] + (4.5 if target.get("kind") == "mech" else 1.75))
+        aimpoint = (target_pos[0], target_pos[1], target_pos[2] +
+                    (_target_height(target, config) * 0.5 if correct_mortar else
+                     4.5 if target.get("kind") == "mech" else 1.75))
         origin = (me["pos"][0], me["pos"][1],
                   me["pos"][2] + float(me.get("stats", {}).get("muzzle_height", 7.0)))
         has_los = world is None or world.line_of_sight(origin, aimpoint)
@@ -138,11 +160,14 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
             if not w:
                 continue
             yaw, pitch, distance, rel = predict_target(me, target, w, config, correct_mortar)
-            pitch = clamp(pitch, float(config["mech"].get("min_pitch", -0.7)), float(config["mech"].get("max_pitch", 1.3)))
+            if pitch is None:
+                continue
+            commanded_pitch = clamp(pitch, float(config["mech"].get("min_pitch", -0.7)),
+                                    float(config["mech"].get("max_pitch", 1.3)))
             solutions[slot] = (yaw, pitch, distance, rel)
             priority = _weapon_aim_priority(w, distance, precision)
             if priority >= 0:
-                candidates.append((priority, slot, yaw, pitch))
+                candidates.append((priority, slot, yaw, commanded_pitch))
         if candidates:
             _, _, yaw, pitch = max(candidates, key=lambda x: x[0])
             aim = [yaw, pitch]
@@ -176,8 +201,9 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
             if precision and w["kind"] in ("gun", "laser"):
                 target_kind = target.get("kind")
                 if target_kind == "mech":
-                    size = 1.0 + 0.05 * float(target.get("cubes", 0))
-                    radius, height = 2.5 * size, 9.0 * size
+                    size = 1.0 + float(config.get("cubes", {}).get("size_per_cube", 0.05)) * float(target.get("cubes", 0))
+                    radius = float(config.get("mech", {}).get("radius", 2.5)) * size
+                    height = _target_height(target, config)
                 elif target_kind == "npc":
                     radius = float(config.get("npc", {}).get("radius", 1.8))
                     height = float(config.get("npc", {}).get("height", 3.5))
@@ -226,11 +252,14 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
                 pitch_ok = -0.05 <= pitch <= 1.15
                 # Self-splash is severe; keep a generous minimum separation.
                 safe = horizontal > 22
-                fire[slot] = bool(aligned and safe and pitch_ok and distance < 215 and cooldown <= 0.04)
+                max_range = float(stats.get("range", float(stats.get("speed", 72)) ** 2 /
+                                            max(1e-6, float(stats.get("gravity", 22))))) if precision else 215
+                fire[slot] = bool(aligned and safe and pitch_ok and distance < max_range and cooldown <= 0.04)
 
     reload_now = False
-    if weapons and weapons[0] and weapons[0]["kind"] == "gun":
-        w = weapons[0]
+    gun = next((w for w in weapons if w and w["kind"] == "gun"), None)
+    if gun:
+        w = gun
         ammo = int(w.get("ammo", 12))
         reloading = float(w.get("reload", 0))
         close = bool(target and dist3(me["pos"], target["pos"]) < 65)
@@ -238,46 +267,63 @@ def combat_action(obs, me, target, config, world=None, correct_mortar=False, pre
     return aim, fire, reload_now, target
 
 
-def projectile_dodge(obs, me, correct_side=False):
+def projectile_dodge(obs, me, correct_side=False, config=None):
     """Predict 3-D projectile proximity and return a lateral escape vector + urgency."""
     p = me["pos"]
     mv = me.get("vel", [0, 0, 0])
-    height = float(me.get("stats", {}).get("height", 9.0))
+    stats = me.get("stats", {})
+    height = float(stats.get("height", 9.0))
+    body_radius = float(stats.get("radius", 2.5))
+    config = config or {}
+    mortar = config.get("weapons", {}).get("mortar", {})
+    gravity = float(mortar.get("gravity", 22.0))
+    splash_radius = float(mortar.get("splash_radius", 7.0))
     best, dodge = 0.0, (0.0, 0.0)
     for shot in obs.get("projectiles", []):
         q, v = shot["pos"], shot["vel"]
         rx, ry = p[0] - q[0], p[1] - q[1]
         vx, vy = v[0] - mv[0], v[1] - mv[1]
         vv = vx * vx + vy * vy
+        splash = shot.get("kind") == "mortar"
+        projectile_radius = float(config.get("projectile", {}).get(
+            "npc_radius" if shot.get("kind") == "npc" else "gun_radius", 0.3))
+        radius = (max(9.0, splash_radius + body_radius) if splash else
+                  max(5.2, body_radius + projectile_radius + 1.0))
+        vertical_limit = splash_radius if splash else projectile_radius + 1.5
+
+        def vertical_gap_at(t):
+            shot_z = q[2] + v[2] * t - (0.5 * gravity * t * t if splash else 0.0)
+            feet_z = p[2] + mv[2] * t
+            return max(feet_z - shot_z, shot_z - (feet_z + height), 0.0)
+
         if vv < 1e-6:
-            continue
-        raw_t = (rx * vx + ry * vy) / vv
-        # Ignore projectiles already moving away (including our own shots).
-        if raw_t <= 0.02:
-            continue
-        t = clamp(raw_t, 0.0, 0.75)
+            if math.hypot(rx, ry) >= radius:
+                continue
+            t = next((i * 0.05 for i in range(14) if vertical_gap_at(i * 0.05) <= vertical_limit), None)
+            if t is None:
+                continue
+        else:
+            raw_t = (rx * vx + ry * vy) / vv
+            if raw_t < 0:
+                continue
+            t = clamp(raw_t, 0.0, 0.75)
         sx = q[0] + v[0] * t
         sy = q[1] + v[1] * t
         mx = p[0] + mv[0] * t
         my = p[1] + mv[1] * t
         horizontal = math.hypot(mx - sx, my - sy)
-        shot_z = q[2] + v[2] * t
-        if shot.get("kind") == "mortar":
-            shot_z -= 0.5 * 22.0 * t * t
-        feet_z = p[2] + mv[2] * t
-        vertical_gap = max(feet_z - shot_z, shot_z - (feet_z + height), 0.0)
-        splash = shot.get("kind") == "mortar"
-        radius = 9.0 if splash else 5.2
-        if vertical_gap > (7.0 if splash else 1.8):
+        if vertical_gap_at(t) > vertical_limit:
             continue
         if horizontal < radius and t < 0.7:
             strength = (radius - horizontal) / radius * (1.0 - t / 0.85)
-            # Move perpendicular to the projectile's horizontal path, away from its approach side.
-            side = 1.0 if (rx * vy - ry * vx) >= 0 else -1.0
-            if correct_side:
-                side = -side
-            n = math.hypot(vx, vy) or 1.0
-            candidate = (-vy / n * side, vx / n * side)
+            if vv < 1e-6:
+                candidate = (rx / horizontal, ry / horizontal) if horizontal > 1e-6 else (1.0, 0.0)
+            else:
+                side = 1.0 if (rx * vy - ry * vx) >= 0 else -1.0
+                if correct_side:
+                    side = -side
+                n = math.sqrt(vv)
+                candidate = (-vy / n * side, vx / n * side)
             if strength > best:
                 best, dodge = strength, candidate
     return dodge, clamp(best, 0.0, 1.0)

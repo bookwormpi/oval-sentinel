@@ -7,6 +7,7 @@ import unittest
 from check import Schema
 from simulator.engine import ROOT, Projectile, Simulator, cylinder_hit, load_config, load_world
 from agent import MechRoyaleBot
+from combat import predict_target
 
 
 class FlatWorld:
@@ -97,6 +98,22 @@ class SimulatorTests(unittest.TestCase):
             self.sim._advance_projectiles()
         self.assertEqual(victim.hp, 1400)
         self.assertEqual(shooter.hits, 0)
+
+    def test_corrected_mortar_aim_hits_stationary_target(self):
+        shooter, victim = self.sim.mechs
+        shooter.pos, victim.pos = [0.0, 0.0, 0.0], [100.0, 0.0, 0.0]
+        shooter.weapons[1] = self.sim.new_weapon("mortar")
+        weapon = {"kind": "mortar", "stats": self.sim.weapon_stats(shooter, "mortar")}
+        me = {"pos": shooter.pos, "vel": [0, 0, 0], "stats": self.sim.mech_stats(shooter)}
+        target = {"kind": "mech", "pos": victim.pos, "vel": [0, 0, 0], "cubes": 0}
+        yaw, pitch, _, _ = predict_target(me, target, weapon, self.config, correct_mortar=True)
+        shooter.aim = [yaw, pitch]
+        shooter.action = {"fire": [False, True]}
+        self.sim._fire(shooter)
+        for _ in range(50):
+            self.sim._advance_projectiles()
+        self.assertGreater(shooter.hits, 0)
+        self.assertLess(victim.hp, self.config["mech"]["hp"])
 
     def test_gun_cadence_and_automatic_reload(self):
         shooter = self.sim.mechs[0]
@@ -403,6 +420,15 @@ class SimulatorTests(unittest.TestCase):
         self.sim.world = Ridge()
         self.assertFalse(self.sim.clear([0, 0, 3], [10, 0, 3]))
         self.assertTrue(self.sim.clear([0, 0, 10], [10, 0, 10]))
+
+    def test_bot_line_of_sight_accounts_for_terrain_ridges(self):
+        from world import World
+        world = World.__new__(World)
+        world.ready, world.terrain, world.prisms, world.los_cache = True, [0], [], {}
+        world.prism_bounds, world.prism_zbounds = [], []
+        world.ground = lambda x, y: 8 if 4 <= x <= 6 else 0
+        self.assertFalse(world.line_of_sight([0, 0, 3], [10, 0, 3]))
+        self.assertTrue(world.line_of_sight([0, 0, 10], [10, 0, 10]))
 
     def test_roof_is_a_landing_surface(self):
         class Roof(FlatWorld):
