@@ -1,4 +1,5 @@
 import sys, unittest
+from unittest.mock import patch
 sys.path.insert(0, "bot")
 from strategy import _effect_value, choose_take, choose_upgrade
 
@@ -7,7 +8,31 @@ class StrategyTests(unittest.TestCase):
         obs = {"self": {"pos": [0,0,0], "weapons": [{"kind":"gun"}, None]},
                "pickups": [{"id": 1, "kind":"laser", "pos":[3,0,0]},
                            {"id": 2, "kind":"mortar", "pos":[10,0,0]}]}
-        self.assertEqual(choose_take(obs), 1)
+        self.assertEqual(choose_take(obs), (1, None))
+
+    def test_take_swaps_a_clearly_worse_held_secondary(self):
+        obs = {"self": {"pos": [0, 0, 0],
+                        "weapons": [{"kind": "gun"}, {"kind": "mortar", "charge": 0}]},
+               "pickups": [{"id": 5, "kind": "laser", "pos": [2, 0, 0]}]}
+        self.assertEqual(choose_take(obs), (5, 1))
+
+    def test_take_does_not_swap_for_a_marginal_or_worse_weapon(self):
+        obs = {"self": {"pos": [0, 0, 0],
+                        "weapons": [{"kind": "gun"}, {"kind": "laser", "charge": 0}]},
+               "pickups": [{"id": 5, "kind": "lightning", "pos": [2, 0, 0]}]}
+        self.assertEqual(choose_take(obs), (None, None))
+
+    def test_take_does_not_drop_a_charging_laser(self):
+        # Laser is already the top-valued secondary, so nothing currently beats
+        # it; patch in a hypothetical better kind to exercise the charge guard
+        # regardless of today's weapon ranking.
+        obs = {"self": {"pos": [0, 0, 0],
+                        "weapons": [{"kind": "gun"}, {"kind": "laser", "charge": 0.4}]},
+               "pickups": [{"id": 5, "kind": "lightning", "pos": [2, 0, 0]}]}
+        with patch("strategy.WEAPON_VALUE", {"laser": 1.0, "lightning": 1.5}):
+            self.assertEqual(choose_take(obs), (None, None))
+            obs["self"]["weapons"][1]["charge"] = 0.0
+            self.assertEqual(choose_take(obs), (5, 1))
 
     def test_upgrade_armor(self):
         hello = {"config": {"upgrades": [{"id":"armor", "max":3, "effects":[]}]}}

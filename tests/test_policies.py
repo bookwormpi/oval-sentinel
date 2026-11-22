@@ -1,4 +1,5 @@
 import os
+import math
 import sys
 import unittest
 from unittest.mock import patch
@@ -7,6 +8,7 @@ sys.path.insert(0, "bot")
 from agent import MechRoyaleBot
 from policies import choose_crate, choose_variant_goal, variant_movement, vanguard_movement, vanguard_target
 from strategy import selected_strategy
+from geometry import angle_delta, slew_angle
 
 
 class FlatWorld:
@@ -71,6 +73,45 @@ class PolicyTests(unittest.TestCase):
                              {"id": 5001, "pos": [10.0, 0.0, 10.0]}]
         self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [50.0, 0.0, 0.0]}]
         self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+
+    def test_scavenger_flies_to_an_otherwise_unreachable_rooftop_cube(self):
+        # 20 m up is far beyond the 4 m walkable-height check, but well within
+        # reach of a sustained boost-climb given plenty of energy and no threats.
+        self.obs["self"].update({"hp": 1000.0, "max_hp": 1400.0, "energy": 100.0,
+                                 "stats": {"walk_speed": 10.0, "jet_drain": 15.0,
+                                          "max_rise_speed": 10.0}})
+        self.obs["cubes"] = [{"id": 5000, "pos": [5.0, 0.0, 20.0]}]
+        goal, kind = choose_variant_goal(self.obs, self.world, "scavenger")
+        self.assertEqual(kind, "cube")
+        self.assertEqual(tuple(goal), (5.0, 0.0, 20.0))
+
+    def test_rooftop_loot_is_skipped_without_enough_energy_or_hp(self):
+        base = {"hp": 1000.0, "max_hp": 1400.0, "energy": 100.0,
+               "stats": {"walk_speed": 10.0, "jet_drain": 15.0, "max_rise_speed": 10.0}}
+        self.obs["cubes"] = [{"id": 5000, "pos": [5.0, 0.0, 20.0]}]
+        self.obs["self"].update({**base, "energy": 30.0})  # climb budget ~3 m, not 20 m
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+        self.obs["self"].update({**base, "hp": 600.0})  # hp_frac ~0.43, below the 0.6 floor
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+
+    def test_rooftop_loot_is_skipped_if_any_enemy_is_within_the_wider_radius(self):
+        self.obs["self"].update({"hp": 1000.0, "max_hp": 1400.0, "energy": 100.0,
+                                 "stats": {"walk_speed": 10.0, "jet_drain": 15.0,
+                                          "max_rise_speed": 10.0}})
+        self.obs["cubes"] = [{"id": 5000, "pos": [5.0, 0.0, 20.0]}]
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [60.0, 0.0, 0.0]}]
+        self.assertEqual(choose_variant_goal(self.obs, self.world, "scavenger")[1], "hold")
+
+    def test_scavenger_prefers_a_closer_ground_pickup_over_flying_for_a_rooftop_one(self):
+        self.obs["self"].update({"hp": 1400.0, "max_hp": 1400.0, "energy": 100.0,
+                                 "stats": {"walk_speed": 10.0, "jet_drain": 15.0,
+                                          "max_rise_speed": 10.0},
+                                 "weapons": [{"kind": "gun"}, {"kind": "mortar", "charge": 0}]})
+        self.obs["pickups"] = [{"id": 1, "kind": "laser", "pos": [30.0, 0.0, 0.0]},
+                               {"id": 2, "kind": "laser", "pos": [5.0, 0.0, 20.0]}]
+        goal, kind = choose_variant_goal(self.obs, self.world, "scavenger")
+        self.assertEqual(kind, "weapon")
+        self.assertEqual(tuple(goal), (30.0, 0.0, 0.0))
 
     def test_drop_capture_stays_in_ring(self):
         self.obs["drops"] = [{"pos": [2.0, 0.0, 0.0], "radius": 8.0,
@@ -143,6 +184,58 @@ class PolicyTests(unittest.TestCase):
                                              (1, 0), (0, 1), (0, 0), 1, 0)
         self.assertEqual(direction, (1.0, 0.0))
         self.assertEqual(speed, 1.0)
+
+    def radar_bot(self):
+        self.obs.update({"tick": 0, "sounds": [], "events": [], "projectiles": []})
+        self.obs["self"].update({
+            "vel": [0.0, 0.0, 0.0], "aim": [0.0, 0.0],
+            "hp": 1400, "max_hp": 1400, "energy": 100, "grounded": True,
+            "stats": {"walk_speed": 10.0, "turn_rate": 4.0},
+            "weapons": [{"kind": "gun", "ammo": 12, "cooldown": 0, "reload": 0,
+                         "stats": {"speed": 252, "range": 230}}, None],
+        })
+        hello = {"config": {"mech": {"min_pitch": -0.7, "max_pitch": 1.3},
+                            "match": {"tick_hz": 20, "decide_every": 2},
+                            "vision": {"fov_deg": 120}}}
+        return MechRoyaleBot(hello, strategy="vanguard", world=self.world)
+
+    def test_idle_scan_covers_full_circle_from_actual_torso_angle(self):
+        bot = self.radar_bot()
+        self.obs["self"]["aim"][0] = 2.9
+        travel = 0.0
+        for i in range(34):
+            self.obs["tick"], self.obs["t"] = i * 2, i * 0.1
+            actual = self.obs["self"]["aim"][0]
+            command = bot.act(self.obs)["aim"][0]
+            updated = slew_angle(actual, command, 4.0, 0.1)
+            travel += angle_delta(updated, actual)
+            self.obs["self"]["aim"][0] = updated
+        self.assertGreater(travel, 2 * math.pi)
+
+    def test_repeated_sounds_do_not_stop_scan_and_damage_takes_priority(self):
+        bot = self.radar_bot()
+        self.obs["sounds"] = [{"kind": "gun", "bearing": 1.5, "age": 0.0, "dist": "far"}]
+        self.obs["events"] = [{"type": "damaged", "bearing": -1.0, "weapon": "gun"}]
+        self.assertAlmostEqual(bot.act(self.obs)["aim"][0], -1.0)
+        self.obs["events"] = []
+        self.assertAlmostEqual(bot.act(self.obs)["aim"][0], 1.5)
+        travel = 0.0
+        for i in range(1, 41):
+            self.obs["tick"], self.obs["t"] = i * 2, i * 0.1
+            actual = self.obs["self"]["aim"][0]
+            command = bot.act(self.obs)["aim"][0]
+            updated = slew_angle(actual, command, 4.0, 0.1)
+            travel += angle_delta(updated, actual)
+            self.obs["self"]["aim"][0] = updated
+        self.assertGreater(travel, 2 * math.pi)
+
+    def test_target_aim_interrupts_scan_and_zone_damage_does_not_stop_it(self):
+        bot = self.radar_bot()
+        self.obs["events"] = [{"type": "damaged", "bearing": None, "weapon": "zone"}]
+        self.assertGreater(bot.act(self.obs)["aim"][0], 0)
+        self.obs["mechs"] = [{"id": 3, "kind": "mech", "pos": [0.0, 100.0, 0.0],
+                               "vel": [0.0, 0.0, 0.0], "aim": [0.0, 0.0], "hp": 1400}]
+        self.assertAlmostEqual(bot.act(self.obs)["aim"][0], math.pi / 2, places=5)
 
     def test_scavenger_fires_on_safe_crate_through_agent(self):
         self.obs.update({"tick": 2, "sounds": [], "events": [], "projectiles": []})

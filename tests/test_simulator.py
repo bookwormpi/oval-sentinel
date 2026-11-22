@@ -6,6 +6,7 @@ import unittest
 
 from check import Schema
 from simulator.engine import ROOT, Projectile, Simulator, cylinder_hit, load_config, load_world
+from agent import MechRoyaleBot
 
 
 class FlatWorld:
@@ -50,6 +51,20 @@ class SimulatorTests(unittest.TestCase):
     def test_observation_conforms_to_schema(self):
         obs = self.sim.observation(self.sim.mechs[0])
         self.assertEqual(Schema(ROOT / "mechfight.schema.json").errors(obs, "Observation"), [])
+
+    def test_idle_scan_discovers_enemy_behind_torso(self):
+        scanner, enemy = self.sim.mechs
+        scanner.pos, enemy.pos = [0.0, 0.0, 0.0], [-100.0, 0.0, 0.0]
+        scanner.aim = [0.0, 0.0]
+        scanner.bot = MechRoyaleBot({"config": self.config}, strategy="vanguard", world=self.sim.world)
+        self.assertEqual(self.sim.observation(scanner)["mechs"], [])
+        found = False
+        for _ in range(60):
+            self.sim.step()
+            if self.sim.observation(scanner)["mechs"]:
+                found = True
+                break
+        self.assertTrue(found)
 
     def test_gun_projectile_damages_target_and_emits_events(self):
         shooter, victim = self.sim.mechs
@@ -401,6 +416,33 @@ class SimulatorTests(unittest.TestCase):
         self.sim._move(mech)
         self.assertEqual(mech.pos[2], 10)
         self.assertTrue(mech.grounded)
+
+    def test_vanguard_flies_to_collect_otherwise_unreachable_elevated_loot(self):
+        from agent import MechRoyaleBot
+
+        class Roof(FlatWorld):
+            prisms = [{"ring": [40, -5, 50, -5, 50, 5, 40, 5], "holes": [], "top": 10, "base": 0}]
+            prism_bounds = [(40, -5, 50, 5)]
+            ready = False
+
+            def route(self, start, goal):
+                return goal
+
+        def vanguard_factory(hello, strategy, world):
+            return MechRoyaleBot(hello, strategy="vanguard", world=world)
+
+        config = copy.deepcopy(self.config)
+        sim = Simulator(["vanguard", "vanguard"], 7, config, Roof(), vanguard_factory)
+        mech, other = sim.mechs
+        mech.pos = [0.0, 0.0, 0.0]
+        other.pos = [-400.0, -400.0, 0.0]  # far away: not a threat, no interference
+        sim.loot.add_cube([45.0, 0.0, 10.0])  # on the 10 m rooftop
+        for _ in range(400):  # 20 s of match time at 20 Hz
+            sim.step()
+            if mech.cubes > 0:
+                break
+        self.assertGreater(mech.cubes, 0, "never climbed onto the roof and collected the cube")
+        self.assertGreaterEqual(mech.pos[2], 9.0)
 
     def test_overlapping_mechs_are_separated(self):
         a, b = self.sim.mechs

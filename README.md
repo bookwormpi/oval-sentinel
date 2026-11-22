@@ -42,6 +42,11 @@ change as well as strategic changes. These are experimental heuristics, not
 measured improvements. Practice matches
 use cooperating house bots, while final matches are free-for-alls; compare
 strategies in the actual competition rather than assuming results transfer.
+When no combat or crate target is selected, the heuristic controllers sweep
+from the actual torso yaw at up to 2 rad/s. They briefly investigate recent
+sounds and face a damage bearing, then resume scanning. The neural controller
+uses its own learned aim instead. Scanning costs time to turn back toward a
+new target and has not been validated as a tournament performance improvement.
 For local checks only, `OVAL_STRATEGY` overrides the committed selection:
 
 ```bash
@@ -216,42 +221,22 @@ default. It was validated against Vanguard *before* the rebalancing below.
 
 ## Vanguard rebalancing
 
-Three changes to Vanguard, each grounded in the official kit's real numbers
-(not new guessed constants) and validated by paired self-play (see below):
+These changes are experimental; their weights and thresholds are heuristics,
+and the simulator comparison below did not establish an improvement:
 
-- **Upgrade valuation now reads the bot's real current stats** (`bot/strategy.py`).
-  The previous selector used 22 fixed, hand-guessed scores. The replacement
-  computes each candidate's actual marginal effect from `hello.config.upgrades`
-  and the mech/weapon stats already in the observation, correctly handling
-  multiplicative stacking (e.g. `+15%` HP compounds across copies, so `plating`
-  is worth more than the previous scores implied relative to the additive
-  `armor`) and "cost" stats consumed as a rate (a 25% cooldown cut buys
-  `1/0.75 - 1 ≈ 33%` more shots, not 25%). This caught and fixed a real defect
-  mid-implementation: a naive percentage against a near-zero baseline (vision/
-  proximity bonuses, which start at 0) made `sensors` wildly overvalued; it is
-  now scaled against the actual base vision range.
-- **Target selection no longer assumes a fixed 1400 max HP** (`bot/combat.py`).
-  Cube stacking raises max HP by up to 40%, so scoring a buffed enemy's
-  remaining fraction against a fixed baseline mis-ranks it against a
-  non-buffed enemy. It now also gives a finishing-blow priority bonus to
-  targets below 15% HP: a target left alive that low fully heals within
-  `regen_delay` (5 s) plus a few seconds of disengagement, so committing to
-  the kill is usually worth more than switching targets.
-- **Cover-seeking when losing a fight** (`bot/policies.py`). Previously,
-  Vanguard's evasive movement only avoided solid geometry and the zone edge;
-  it never considered breaking line of sight. Below 40% HP while engaged with
-  a visible enemy mech, it now prefers a walkable retreat/strafe direction
-  that would also put the enemy out of sight, among the options it was
-  already evaluating.
+- **Upgrade valuation** (`bot/strategy.py`) estimates effects using current
+  stats and configured upgrades, with heuristic weights for their importance.
+- **Target selection** (`bot/combat.py`) uses enemy max HP when reported,
+  falls back to a fixed value otherwise, and prioritizes near-death targets.
+- **Cover-seeking** (`bot/policies.py`) favors breaking line of sight when
+  retreating from an enemy at low health.
 
-```bash
-# Ad hoc paired A/B (not part of the committed test suite): mirrors
-# simulator/train.py's methodology, alternating which half of 8 seats uses
-# the new vs. pre-rebalance Vanguard per seed, matched head-to-head.
-python3 /tmp/vanguard_ab/ab_test.py 30 6000
-```
-
-VANGUARD_AB_RESULTS_PLACEHOLDER
+An ad hoc simulator comparison used 30 seeds, two alternating seat assignments
+per seed, and eight Vanguard bots per match. The new minus old group averages
+were +0.0065 in normalized placement and +0.79 seconds in survival. This
+provides no convincing evidence of an improvement. The simulator is
+approximate, mirrored matches are not independent, and the test did not cover
+the later rooftop-flight or weapon-swap changes.
 
 ## Docker validation
 

@@ -5,6 +5,19 @@ import math
 from adaptive import DEFAULT_PARAMETERS
 from geometry import dist2, unit2
 from navigation import zone_state
+from strategy import WEAPON_VALUE, SWAP_MARGIN
+
+
+def _climb_budget(me):
+    """Rough reachable climb height from sustained boost: energy spent at
+    jet_drain per second, climbing at max_rise_speed once ramped up, minus a
+    reserve kept for a dodge or retreat after landing."""
+    stats = me.get("stats", {})
+    jet_drain = float(stats.get("jet_drain", 15.0))
+    if jet_drain <= 0:
+        return 0.0
+    spendable = max(0.0, float(me.get("energy", 0)) - 25.0)
+    return spendable / jet_drain * float(stats.get("max_rise_speed", 10.0))
 
 
 def _interior_point(pos, center, radius, margin):
@@ -59,6 +72,20 @@ def choose_variant_goal(obs, world, mode, parameters=None):
             return False
         return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
 
+    climb = _climb_budget(me)
+    hp_frac = float(me.get("hp", 1.0)) / max(1.0, float(me.get("max_hp", 1.0)))
+
+    def reachable_by_flight(point, threat_radius):
+        """Rooftop loot is otherwise unreachable; nothing else here ever climbs.
+        Being airborne is riskier than walking, so require more margin: decent
+        HP/energy in reserve and no enemy anywhere near the wider radius."""
+        height = point[2] - pos[2]
+        if not (4.0 < height <= climb) or hp_frac < 0.6:
+            return False
+        if dist2(point, center) > max(0.0, radius - min(12.0, radius * 0.05)):
+            return False
+        return all(dist2(point, enemy["pos"]) >= threat_radius for enemy in enemies)
+
     # A full repair and three cubes can justify a detour, including early in a match.
     for drop in obs.get("drops", []):
         point = drop["pos"]
@@ -78,17 +105,30 @@ def choose_variant_goal(obs, world, mode, parameters=None):
             for cube in obs.get("cubes", []):
                 point = cube["pos"]
                 distance = dist2(pos, point)
-                if distance < params["cube_seek_distance"] and safe(point, params["loot_threat_distance"]):
+                if distance >= params["cube_seek_distance"]:
+                    continue
+                if safe(point, params["loot_threat_distance"]):
                     choices.append((distance, point, "cube"))
+                elif reachable_by_flight(point, params["loot_threat_distance"] * 2):
+                    # Slower and riskier than ground loot, so only competitive
+                    # when nothing walkable is closer.
+                    choices.append((distance + 40.0, point, "cube"))
         slots = me.get("weapons", [])
-        if len(slots) > 1 and slots[1] is None:
-            weights = {"laser": 1.0, "lightning": 0.9, "mortar": 0.7}
+        if len(slots) > 1:
+            current = slots[1]
+            current_value = WEAPON_VALUE.get(current["kind"], 0) if current else -1.0
             for pickup in obs.get("pickups", []):
-                weight = weights.get(pickup["kind"], 0)
+                weight = WEAPON_VALUE.get(pickup["kind"], 0)
+                if not weight or weight <= current_value + SWAP_MARGIN:
+                    continue
                 point = pickup["pos"]
                 distance = dist2(pos, point)
-                if weight and distance < params["weapon_seek_distance"] and safe(point, params["loot_threat_distance"]):
+                if distance >= params["weapon_seek_distance"]:
+                    continue
+                if safe(point, params["loot_threat_distance"]):
                     choices.append((distance / weight + 8, point, "weapon"))
+                elif reachable_by_flight(point, params["loot_threat_distance"] * 2):
+                    choices.append((distance / weight + 48.0, point, "weapon"))
         if choices:
             _, point, kind = min(choices, key=lambda item: item[0])
             return tuple(point), kind

@@ -6,7 +6,7 @@ from world import World
 from navigation import choose_goal, steer
 from combat import choose_target, combat_action, projectile_dodge
 from strategy import choose_upgrade, choose_take, survival_boost, should_jump, selected_strategy
-from geometry import dist2, unit2, angle_delta
+from geometry import dist2, unit2, angle_delta, wrap_angle
 from policies import choose_variant_goal, choose_crate, variant_movement, vanguard_target, vanguard_movement
 from adaptive import load_policy, validate_parameters
 
@@ -23,6 +23,9 @@ class MechRoyaleBot:
         self.tick_count = 0
         self.current_target_id = None
         self.current_combat_target = None
+        self.scan_sound_bearing = None
+        self.scan_sound_deadline = 0.0
+        self.scan_sound_ready = 0.0
         self.strategy = selected_strategy(strategy)
         if policy_parameters is not None and self.strategy != "adaptive":
             raise ValueError("Policy parameters are only supported by the adaptive strategy")
@@ -116,6 +119,13 @@ class MechRoyaleBot:
             danger = max(danger, 0.60)
         dodge, projectile_urgency = projectile_dodge(obs, me, correct_side=self.strategy in ("vanguard", "adaptive"))
         urgency = max(danger, projectile_urgency)
+        # Rooftop loot is only ever chosen as a goal when calm and safe (see
+        # choose_variant_goal); still require calm here too, since the goal can
+        # go stale for a tick or two after a sudden new threat appears. Keep
+        # climbing all the way up, not just until within the original 4 m
+        # walkable-height gate: stopping early would drop it before landing.
+        climbing = (goal_kind in ("cube", "weapon") and urgency <= 0.12
+                    and me["pos"][2] < goal[2] - 1.0)
 
         # Zone recovery outranks combat evasion; otherwise break away from focused attackers.
         if self.strategy in ("vanguard", "adaptive"):
@@ -151,20 +161,44 @@ class MechRoyaleBot:
         aim, fire, reload_now, target_info = combat_action(
             obs, me, target, self.config, self.world,
             correct_mortar=self.strategy != "baseline", precision=self.strategy in ("vanguard", "adaptive"))
+        damage_bearing = None
         for event in obs.get("events", []):
             if event.get("type") == "damaged" and event.get("bearing") is not None:
                 if event.get("rear") or target is None:
-                    aim = [float(event["bearing"]), aim[1]]
+                    if event.get("weapon") != "zone":
+                        damage_bearing = float(event["bearing"])
+                        aim = [damage_bearing, aim[1]]
 
-        # With no visible target, scan recent sound bearings; otherwise sweep the horizon.
+        # Sweep from actual yaw so the torso keeps rotating even after interruptions.
         if target is None:
-            recent_sounds = [s for s in obs.get("sounds", []) if float(s.get("age", 9)) < 1.2]
-            if recent_sounds:
-                s = min(recent_sounds, key=lambda q: float(q.get("age", 9)))
-                aim = [float(s["bearing"]), 0.0]
-            elif not any(e.get("type") == "damaged" for e in obs.get("events", [])):
-                phase = now*0.42 + float(me.get("id", 0))*2.399963
-                aim = [(phase + math.pi) % (2*math.pi) - math.pi, 0.0]
+            actual_yaw = float(me.get("aim", [0.0, 0.0])[0])
+            if damage_bearing is not None:
+                self.scan_sound_bearing = None
+            else:
+                if self.scan_sound_bearing is not None and (
+                        now >= self.scan_sound_deadline
+                        or abs(angle_delta(self.scan_sound_bearing, actual_yaw)) < 0.1):
+                    self.scan_sound_bearing = None
+                if self.scan_sound_bearing is None and now >= self.scan_sound_ready:
+                    recent_sounds = [s for s in obs.get("sounds", [])
+                                     if "bearing" in s and float(s.get("age", 9)) < 1.2]
+                    if recent_sounds:
+                        sound = min(recent_sounds, key=lambda s: float(s.get("age", 9)))
+                        self.scan_sound_bearing = float(sound["bearing"])
+                        self.scan_sound_deadline = now + 0.8
+                        self.scan_sound_ready = now + 4.0
+                if self.scan_sound_bearing is not None:
+                    aim = [self.scan_sound_bearing, 0.0]
+                else:
+                    match = self.config.get("match", {})
+                    interval = float(match.get("decide_every", 2)) / float(match.get("tick_hz", 20))
+                    turn_rate = float(me.get("stats", {}).get("turn_rate",
+                                      self.config.get("mech", {}).get("turn_rate", 4.0)))
+                    fov = math.radians(float(self.config.get("vision", {}).get("fov_deg", 120)))
+                    step = min(2.0 * interval, turn_rate * interval, fov / 2)
+                    aim = [wrap_angle(actual_yaw + step), 0.0]
+        else:
+            self.scan_sound_bearing = None
 
         # Keep commanded movement magnitude intentional (the protocol uses it as speed fraction).
         move = [round(mx*move_scale, 4), round(my*move_scale, 4)]
@@ -177,12 +211,19 @@ class MechRoyaleBot:
             "fire": fire,
             "reload": reload_now,
         }
+        if climbing:
+            # The jump starts the ascent; boost (jets) then sustains the climb
+            # while airborne until the goal's height is reached.
+            action["jump"] = bool(me.get("grounded", True)) and float(me.get("energy", 0)) > 20
+            action["boost"] = float(me.get("energy", 0)) > 18
         pick = choose_upgrade(obs, self.hello)
         if pick is not None:
             action["pick"] = pick
-        take = choose_take(obs)
+        take, drop = choose_take(obs)
         if take is not None:
             action["take"] = take
+        if drop is not None:
+            action["drop"] = drop
 
         # Debug drawings are sparse and small; they do not influence the match.
         if self.tick_count % 10 == 0:

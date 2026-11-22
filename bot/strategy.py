@@ -104,23 +104,42 @@ def choose_upgrade(obs, hello):
     return best[1] if best[0] > -1e8 else None
 
 
+# Relative secondary-weapon priority, shared with the goal-seeking logic in
+# policies.py so pursuing and actually taking a weapon agree on which is better.
+WEAPON_VALUE = {"laser": 1.0, "lightning": 0.95, "mortar": 0.70}
+# Minimum value gap to justify a swap: equip_s briefly disables firing, so a
+# sideways or marginal trade is not worth it.
+SWAP_MARGIN = 0.1
+
+
 def choose_take(obs):
+    """Return (take_id, drop_slot); both are None if nothing worth taking is near."""
     me = obs["self"]
     slots = me.get("weapons", [None, None])
-    if len(slots) < 2 or slots[1] is not None:
-        return None
+    if len(slots) < 2:
+        return None, None
     x, y, z = me["pos"]
-    weights = {"laser": 1.0, "lightning": 0.95, "mortar": 0.70}
+    current = slots[1]
+    current_value = WEAPON_VALUE.get(current["kind"], 0) if current else -1.0
     options = []
     for p in obs.get("pickups", []):
-        w = weights.get(p["kind"], 0)
+        w = WEAPON_VALUE.get(p["kind"], 0)
         if w <= 0:
             continue
         dxy = math_hypot(x-p["pos"][0], y-p["pos"][1])
         dz = abs(z-p["pos"][2])
         if dxy <= 4.0 and dz <= 4.0:
             options.append((w, p["id"]))
-    return max(options)[1] if options else None
+    if not options:
+        return None, None
+    best_weight, best_id = max(options)
+    if current is None:
+        return best_id, None
+    # A laser mid-charge cannot be dropped (the engine rejects it); don't bother.
+    if best_weight > current_value + SWAP_MARGIN and not (
+            current["kind"] == "laser" and float(current.get("charge", 0)) > 0):
+        return best_id, 1
+    return None, None
 
 
 def math_hypot(x, y):
