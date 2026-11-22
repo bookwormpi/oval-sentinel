@@ -5,11 +5,12 @@ import os
 
 # Change this value and submit the resulting commit to test a different policy.
 SELECTED_STRATEGY = "vanguard"
-STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher", "vanguard")
+STRATEGIES = ("baseline", "survivor", "scavenger", "skirmisher", "vanguard", "adaptive")
 
 
-def selected_strategy():
-    mode = os.environ.get("OVAL_STRATEGY", SELECTED_STRATEGY)
+def selected_strategy(mode=None):
+    if mode is None:
+        mode = os.environ.get("OVAL_STRATEGY", SELECTED_STRATEGY)
     if mode not in STRATEGIES:
         raise ValueError(f"Unknown strategy {mode!r}; choose from {', '.join(STRATEGIES)}")
     return mode

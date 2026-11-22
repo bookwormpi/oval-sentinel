@@ -33,6 +33,7 @@ Docker build argument alone will not select a strategy for a submission.
 | `scavenger` | Survivor-style movement plus pursuit of nearby safe cubes, weapons and drops; shoots nearby crates when there is no tracked target or recent damage. |
 | `skirmisher` | Collects nearby loot, strafes nearby mechs and maintains distance while fighting; zone recovery takes priority. |
 | `vanguard` | Scavenger-based experiment with corrected dodge direction, actual-aim firing gates, safe crate prioritization and short-range obstacle-aware evasion. The default for the next submission. |
+| `adaptive` | Opt-in Vanguard-derived policy whose loot, crate and zone thresholds come from `bot/adaptive_policy.json`. This file must exist and be included in the submission. |
 
 The alternatives also correct a mortar-aiming defect that is deliberately
 retained in `baseline`, so comparisons with the baseline include this combat
@@ -72,6 +73,82 @@ python3 check.py --schema mechfight.schema.json --stream stream.jsonl.gz --map-d
 
 The included recorded stream is a protocol/conformance fixture. Its observations do not react to bot actions, so it cannot measure placement or combat quality.
 
+## Approximate self-play
+
+The offline simulator runs the actual bot strategies against one another on the
+included map. From this directory:
+
+```bash
+# Alternate eight bots of each strategy, across four seeded matches.
+python3 -m simulator --strategies scavenger vanguard --slots 16 --matches 4 --seed 42 > selfplay.jsonl
+
+# Short smoke test; the survivors remain unranked.
+python3 -m simulator --strategies scavenger vanguard --seconds 20
+```
+
+`--slots` cycles through the specified strategies (default: one bot per
+strategy); their order rotates between matches. Seeds increase by one per match.
+Use `--map-dir` to choose another arena containing `v2/world.json` and
+`v2/terrain.i16`, and `--config-stream` to choose a gzipped recorded stream
+containing a hello/config message. Output is one JSON object per match followed
+by a summary. Local placement points are `number of bots - place`; equal-tick
+eliminations share a place, and timeout survivors are ranked by remaining HP.
+These are not official scores. Truncated matches are excluded from the summary,
+and their surviving bots have null placement and score.
+
+**This is not the tournament engine or a training algorithm.** The simulator
+approximates movement and aiming, all four weapons and their signature effects,
+NPC drones, crates, cubes, upgrades, weapon pickups, supply drops, vision,
+sounds, terrain, the zone and placement. Per-bot results include collected
+`cubes` and chosen `upgrades`.
+
+The official engine is unavailable. Important remaining differences include
+sampled collisions and terrain, approximate rooftop/ledge and overhang physics,
+ellipsoidal tree canopies and attenuation, NPC AI and spawn locations, projectile
+trajectories and impacts, and zone/drop randomization. Projectiles do not inherit
+shooter velocity; the protocol does not specify whether they should. Bots run
+in-process, so timeouts, crashes, transport limits and official cooperative
+house-bot behavior are not simulated. Practice matches use 15 cooperating
+opponents rather than this free-for-all. Results are useful for debugging and
+experiments, not predicting the leaderboard; calibrate against real match
+observations before optimizing against them.
+
+## Experimental policy search
+
+The trainer uses episodic **evolutionary policy search**, not a neural network:
+it perturbs six bounded Vanguard thresholds and updates them using completed
+match placement rewards. Opponents remain the fixed Vanguard policy. Each
+candidate plays both alternating seat assignments for every training seed.
+Validation uses separate seeds and repeats those mirrored matches for both the
+candidate and unmodified Vanguard parameters. Its `paired_difference` is the
+candidate's mean normalized placement margin minus the default's margin; one
+point is one entire local placement-score range, not an official point.
+Identical seeds reproduce initial conditions, but later randomness can diverge
+as actions differ. Two or three validation seeds are not enough to establish a
+reliable improvement.
+
+```bash
+# Requires a new output path; the trainer never overwrites an existing policy.
+python3 -m simulator.train --seed 42 --train-seeds 2 --validation-seeds 2 \
+  --slots 8 --generations 1 --directions 1 --output /tmp/adaptive-policy.json
+
+# Test the resulting policy against Vanguard on other seeds.
+python3 -m simulator --strategies adaptive vanguard --policy /tmp/adaptive-policy.json \
+  --slots 8 --matches 4 --seed 2000042
+```
+
+Training emits JSON lines with the sampled policies, each match and a summary;
+the output policy also contains its training and validation metadata. Only full
+matches count. Training costs `4 * train_seeds * generations * directions +
+4 * validation_seeds` full matches. The policy is an experiment, not an
+automatically promoted improvement. To submit one, put the chosen JSON at
+`bot/adaptive_policy.json`, set `SELECTED_STRATEGY = "adaptive"`, run the
+conformance check and commit both files. Other strategies remain unchanged.
+
+The included first candidate was trained on seeds 42 and 43 and validated on
+1000042 and 1000043 with eight bots. Its mean paired validation difference was
+approximately zero; this small experiment does not show an improvement.
+
 ## Docker validation
 
 Build from this directory:
@@ -91,6 +168,7 @@ The match runtime is 1 CPU, 512 MB RAM, no network, read-only filesystem except 
 - Navigation is a local waypoint planner, not globally optimal A*; collision and visibility calculations remain approximations.
 - Mortar aiming is approximate and should be tuned from actual match replays;
   the baseline has a known gravity double-counting defect.
-- The strategy is deterministic and heuristic; no reinforcement learning or match-outcome optimization has been performed.
+- The default strategy is deterministic and heuristic; simulator policy search
+  does not establish an improvement against the tournament engine.
 
 The next meaningful evaluation is a scored 48-match run. Compare placement, survival time, damage dealt/received, and cube collection against both the original 0.29 result and the 1.15 starter baseline.

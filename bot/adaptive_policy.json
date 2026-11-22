@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "base_strategy": "vanguard",
+  "parameters": {
+    "cube_seek_distance": 100.10806774718344,
+    "weapon_seek_distance": 85.11115231449884,
+    "loot_threat_distance": 45.04770679781471,
+    "crate_attack_distance": 69.59886644280064,
+    "crate_threat_distance": 120.07290759073308,
+    "zone_lead_seconds": 12.213907630620135
+  },
+  "training": {
+    "method": "antithetic_es_v1",
+    "train_seeds": [
+      42,
+      43
+    ],
+    "validation_seeds": [
+      1000042,
+      1000043
+    ],
+    "slots": 8,
+    "generations": 1,
+    "directions": 1,
+    "sigma": 0.25,
+    "step_size": 0.2,
+    "source_sha256": {
+      "world": "e0302dd4777b527b00a6a4b2e02759915402a23c58839d921e9fcc6d58092445",
+      "terrain": "3aa74308e096e36ed29230f135b0f3ff3ae09dfa164c2b687455b4f975b01d38",
+      "config_stream": "884a1bbb2afe288ea5b2d60ce20c74274ba37351ec31bf3334c160f13ec48a95"
+    },
+    "candidate_margin": 1.3877787807814457e-17,
+    "default_margin": 0.0,
+    "paired_difference": 1.3877787807814457e-17,
+    "paired_differences": [
+      -0.0357142857142857,
+      0.035714285714285726
+    ],
+    "standard_error": 0.03571428571428571
+  }
+}

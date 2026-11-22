@@ -46,6 +46,7 @@ class World:
                     if os.sys.byteorder != "little":
                         vals.byteswap()
                     self.terrain = vals
+                self.root = root.resolve()
                 self.ready = True
                 return
             except Exception:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from adaptive import DEFAULT_PARAMETERS
 from geometry import dist2, unit2
 from navigation import zone_state
 
@@ -17,7 +18,7 @@ def _interior_point(pos, center, radius, margin):
     return center[0] + dx * safe_radius / distance, center[1] + dy * safe_radius / distance
 
 
-def _zone_goal(obs, world):
+def _zone_goal(obs, world, lead_seconds=12.0):
     me = obs["self"]
     pos = me["pos"]
     zone = obs["zone"]
@@ -33,14 +34,15 @@ def _zone_goal(obs, world):
     distance = dist2(pos, point)
     speed = max(1.0, float(me.get("stats", {}).get("walk_speed", 11.7)))
     time_left = max(0.0, float(zone["shrink_end"]) - float(obs["t"]))
-    if distance > 1.0 and time_left <= distance / speed + 12.0:
+    if distance > 1.0 and time_left <= distance / speed + lead_seconds:
         return (point[0], point[1], world.ground(*point)), "zone"
     return None
 
 
-def choose_variant_goal(obs, world, mode):
+def choose_variant_goal(obs, world, mode, parameters=None):
     """Choose objectives without requiring information outside the observation."""
-    zone_goal = _zone_goal(obs, world)
+    params = parameters if parameters is not None else DEFAULT_PARAMETERS
+    zone_goal = _zone_goal(obs, world, params["zone_lead_seconds"])
     if zone_goal is not None:
         return zone_goal
 
@@ -76,7 +78,7 @@ def choose_variant_goal(obs, world, mode):
             for cube in obs.get("cubes", []):
                 point = cube["pos"]
                 distance = dist2(pos, point)
-                if distance < 100 and safe(point, 45):
+                if distance < params["cube_seek_distance"] and safe(point, params["loot_threat_distance"]):
                     choices.append((distance, point, "cube"))
         slots = me.get("weapons", [])
         if len(slots) > 1 and slots[1] is None:
@@ -85,7 +87,7 @@ def choose_variant_goal(obs, world, mode):
                 weight = weights.get(pickup["kind"], 0)
                 point = pickup["pos"]
                 distance = dist2(pos, point)
-                if weight and distance < 85 and safe(point, 45):
+                if weight and distance < params["weapon_seek_distance"] and safe(point, params["loot_threat_distance"]):
                     choices.append((distance / weight + 8, point, "weapon"))
         if choices:
             _, point, kind = min(choices, key=lambda item: item[0])
@@ -104,16 +106,17 @@ def choose_variant_goal(obs, world, mode):
     return tuple(pos), "hold"
 
 
-def choose_crate(obs, last_damage_t):
+def choose_crate(obs, last_damage_t, parameters=None):
     """Farm a nearby crate only when no enemy is close and damage is not recent."""
     me = obs["self"]
+    params = parameters if parameters is not None else DEFAULT_PARAMETERS
     if obs["t"] - last_damage_t < 8.0:
         return None
-    if any(e.get("kind") == "mech" and dist2(me["pos"], e["pos"]) < 120
+    if any(e.get("kind") == "mech" and dist2(me["pos"], e["pos"]) < params["crate_threat_distance"]
            for e in obs.get("mechs", [])):
         return None
     crates = [c for c in obs.get("crates", [])
-              if dist2(me["pos"], c["pos"]) < 70
+              if dist2(me["pos"], c["pos"]) < params["crate_attack_distance"]
               and abs(me["pos"][2] - c["pos"][2]) <= 4]
     if not crates:
         return None
@@ -121,7 +124,7 @@ def choose_crate(obs, last_damage_t):
     return {"id": crate["id"], "kind": "crate", "pos": crate["pos"], "vel": [0, 0, 0]}
 
 
-def vanguard_target(obs, current_target, last_damage_t):
+def vanguard_target(obs, current_target, last_damage_t, parameters=None):
     """Avoid chasing distant drones; farm a nearby crate when no mech threatens."""
     me = obs["self"]
     if current_target:
@@ -129,7 +132,7 @@ def vanguard_target(obs, current_target, last_damage_t):
         if current_target.get("kind") == "mech" or distance < 70:
             return current_target
     if me.get("cubes", 0) < 10 and me.get("hp", 1) >= 0.8 * me.get("max_hp", 1):
-        crate = choose_crate(obs, last_damage_t)
+        crate = choose_crate(obs, last_damage_t, parameters)
         if crate is not None:
             return crate
     return None
